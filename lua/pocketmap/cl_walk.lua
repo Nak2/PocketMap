@@ -3,7 +3,6 @@ PocketMap.Walk = {}
 local Walk = PocketMap.Walk
 local Session = {}
 Session.__index = Session
-local cvAirAccelerate = CreateClientConVar("pocketmap_airaccelerate", "-1", true, false, "Air acceleration in pocket maps; -1 uses sv_airaccelerate.", -1, 10000)
 
 -- Query the BSP's spatial partition instead of scanning every leaf on every
 -- ground, stair, ladder and slide probe. Child indices < 0 encode leaf indices.
@@ -174,8 +173,6 @@ hook.Add("CreateMove", "PocketMap_Walk", function(cmd)
 		local angles = cmd:GetViewAngles()
 		mv.angles = Angle(angles.p, angles.y + session.yawOffset, 0)
 		mv.maxSpeed = ply:GetRunSpeed()
-		local airAccelerate = cvAirAccelerate:GetFloat()
-		session.airAccelerate = airAccelerate >= 0 and airAccelerate or nil
 		PocketMap.Movement.Step(ply, mv, session)
 	end
 	cmd:ClearMovement()

@@ -478,7 +478,7 @@ do
             return vx, vy
         end
 
-        local accel = (context and context.airAccelerate or cvar_float(cvAirAccelerate, AIR_ACCEL_FALLBACK))
+        local accel = cvar_float(cvAirAccelerate, AIR_ACCEL_FALLBACK)
         local accelSpeed = accel * dt * wishSpeed * (surfaceFriction or 1)
         if accelSpeed > addSpeed then
             accelSpeed = addSpeed
