@@ -187,6 +187,9 @@ end
 ---The tiny map is small, so the camera easily gets closer than the near plane (about 7 units) and the map is cut off. While a
 ---block is close the near plane moves in to half the distance. A hook that returns a view replaces the rest, so all of it is returned.
 PocketMap.Hooks.Register( "CalcView", "PocketMap_NearClip", function( _, origin, angles, fov, znear, zfar )
+	if PocketMap.Walk and PocketMap.Walk.session then
+		return PocketMap.Walk.View( fov, zfar )
+	end
 	local nearest = math.huge
 	for mini in pairs( active ) do
 		if IsValid( mini.ent ) and mini.scaleVec then
