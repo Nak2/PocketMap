@@ -4,7 +4,7 @@ if not file.Exists("includes/modules/niknaks.lua","LUA") then
 end
 require("niknaks")
 
-if NikNaks.Version < 0.97 then
+if NikNaks.Version < 0.975 then
 	ErrorNoHalt( "[PocketMap] This addon needs an up to date NikNaks.\n" )
 	return
 end
@@ -36,7 +36,9 @@ local CLIENT_FILES = {
 	"pocketmap/cl_lightanim.lua",
 	"pocketmap/cl_maplist.lua",
 	"pocketmap/cl_ui.lua",
+	"pocketmap/cl_physics.lua",
 	"pocketmap/cl_gamemove.lua",
+	"pocketmap/cl_footsteps.lua",
 	"pocketmap/cl_walk.lua",
 }
 

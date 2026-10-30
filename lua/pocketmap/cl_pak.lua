@@ -148,7 +148,8 @@ function Pak.Read(zip, yield)
 		local nameLength, extra, comment = uint(zip, pos + 28, 2), uint(zip, pos + 30, 2), uint(zip, pos + 32, 2)
 		local offset = uint(zip, pos + 42, 4) + 1
 		local name = zip:sub(pos + 46, pos + 45 + nameLength):lower():gsub("\\", "/")
-		if name:match("^materials/") and (name:match("%.vmt$") or name:match("%.vtf$")) and not name:find("..", 1, true) and not name:find(":", 1, true) and not name:find("%z") then
+		-- A material the game already has is left alone: mounted files win over the game's, and a map must not replace one for the whole session
+		if name:match("^materials/") and (name:match("%.vmt$") or name:match("%.vtf$")) and not name:find("..", 1, true) and not name:find(":", 1, true) and not name:find("%z") and not file.Exists(name, "GAME") then
 			assert(flags % 2 == 0, "Encrypted BSP material")
 			assert(size <= 268435456, "BSP texture exceeds 256 MB")
 			assert(zip:sub(offset, offset + 3) == "PK\3\4", "Invalid ZIP local header")

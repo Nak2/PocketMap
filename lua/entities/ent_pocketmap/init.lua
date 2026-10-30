@@ -45,7 +45,7 @@ end
 
 function ENT:SpawnFunction( ply, tr, class )
 	if not tr.Hit then return end
-	if not NikNaks or NikNaks.Version < 0.97 then
+	if not NikNaks or NikNaks.Version < 0.975 then
 		ply:ChatPrint( "[PocketMap] This addon needs an up to date NikNaks." )
 		return
 	end
@@ -59,7 +59,7 @@ function ENT:SpawnFunction( ply, tr, class )
 end
 
 function ENT:Initialize()
-	if not NikNaks or NikNaks.Version < 0.97 then
+	if not NikNaks or NikNaks.Version < 0.975 then
 		SafeRemoveEntity( self )
 		return
 	end

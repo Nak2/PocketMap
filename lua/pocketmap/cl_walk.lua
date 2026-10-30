@@ -41,6 +41,7 @@ function Session:TraceHull(start, finish, mins, maxs, mask, out)
 	out.HitNormal = Vector(0, 0, 0)
 	out.Contents, out.SurfaceProps = 0, 0
 	out.Displacement = false
+	out.Texinfo, out.SurfaceName = nil, nil -- the surface that was hit, for the sound of a step: a texinfo, or the name of a surface property
 	local lo = {x = math.min(start.x, finish.x) + mins.x, y = math.min(start.y, finish.y) + mins.y, z = math.min(start.z, finish.z) + mins.z}
 	local hi = {x = math.max(start.x, finish.x) + maxs.x, y = math.max(start.y, finish.y) + maxs.y, z = math.max(start.z, finish.z) + maxs.z}
 	local seen = {}
@@ -48,7 +49,7 @@ function Session:TraceHull(start, finish, mins, maxs, mask, out)
 		for _, brush in ipairs(leaf:GetBrushes()) do
 			if not seen[brush] and bit.band(brush.contents, mask or MASK_PLAYERSOLID) ~= 0 then
 				seen[brush] = true
-				local enter, leave, normal = -1, 1, nil
+				local enter, leave, normal, hitTexinfo = -1, 1, nil, nil
 				local outside, endOutside, rejected = false, false, false
 				for _, side in ipairs(brush.sides) do
 					local n, dist = side.plane.normal, side.plane.dist
@@ -64,7 +65,7 @@ function Session:TraceHull(start, finish, mins, maxs, mask, out)
 					if d1 > 0 or d2 > 0 then
 						if d1 > d2 then
 							local f = (d1 - 0.03125) / (d1 - d2)
-							if f > enter then enter, normal = f, n end
+							if f > enter then enter, normal, hitTexinfo = f, n, side.texinfo end
 						else
 							leave = math.min(leave, (d1 + 0.03125) / (d1 - d2))
 						end
@@ -78,13 +79,19 @@ function Session:TraceHull(start, finish, mins, maxs, mask, out)
 						out.Fraction = math.max(0, enter)
 						local length = math.sqrt(normal.x * normal.x + normal.y * normal.y + normal.z * normal.z)
 						out.HitNormal = {x = normal.x / length, y = normal.y / length, z = normal.z / length}
-						out.Contents = brush.contents
+						out.Contents, out.Texinfo = brush.contents, hitTexinfo
 					end
 				end
 			end
 		end
 	end
-	if self.displacements then PocketMap.Displacements.Trace(self.displacements, start, finish, mins, maxs, mask, lo, hi, out) end
+	-- The static props (and the terrain, if pocketmap_physics_terrain says so) from the collision the map was compiled with (cl_physics.lua).
+	-- Unless that has the terrain, it is made of the triangles of the displacements (cl_displacements.lua).
+	local physics = self.physics
+	if physics then PocketMap.Physics.Trace(physics, start, finish, mins, maxs, mask, lo, hi, out) end
+	if self.displacements and not (physics and physics.terrain > 0) then
+		PocketMap.Displacements.Trace(self.displacements, start, finish, mins, maxs, mask, lo, hi, out)
+	end
 	out.Hit = out.Fraction < 1 or out.StartSolid
 	out.HitWorld = out.Hit
 	out.HitPos = {x = start.x + (finish.x - start.x) * out.Fraction, y = start.y + (finish.y - start.y) * out.Fraction, z = start.z + (finish.z - start.z) * out.Fraction}
@@ -113,8 +120,22 @@ function Move:SetMaxSpeed(speed) self.maxSpeed, self.speedModified = speed, true
 function Move:SetMaxClientSpeed(speed) self.maxClientSpeed, self.maxSpeed, self.speedModified = speed, speed, true end
 function Move:GetConstraintPastRadius() return self.origin:DistToSqr(self.constraintCenter) > self.constraintRadius * self.constraintRadius end
 
+local REACH_SQR = 300 * 300
+local MOVE_HOOK, HUD_HOOK = "PocketMap_Walk", "PocketMap_WalkHUD"
+
+-- These two only exist while somebody walks in a map
 function Walk.Leave()
 	Walk.session = nil
+	hook.Remove("CreateMove", MOVE_HOOK)
+	hook.Remove("HUDPaint", HUD_HOOK)
+end
+
+local function leaveKeyName()
+	return string.upper(input.LookupBinding("+reload") or "R")
+end
+
+local function drawLeaveHint()
+	draw.SimpleTextOutlined("Press " .. leaveKeyName() .. " to leave", "DermaLarge", ScrW() / 2, ScrH() - 48, color_white, TEXT_ALIGN_CENTER, TEXT_ALIGN_BOTTOM, 1, color_black)
 end
 
 function Walk.ToggleNoclip()
@@ -129,20 +150,12 @@ function Walk.ToggleNoclip()
 			return
 		end
 	end
+	-- The velocity stays as it is, in both directions: noclip has its own friction, and walking on goes on from where the flight was
 	session.noclip = not session.noclip
-	mv.velocity = Vector()
 	chat.AddText("[PocketMap] Noclip " .. (session.noclip and "on" or "off") .. ".")
 end
 
 concommand.Add("pocketmap_noclip", Walk.ToggleNoclip)
-
--- Consume the normal noclip binding so it controls the local camera session.
-PocketMap.Hooks.Register("PlayerBindPress", "PocketMap_Noclip", function(_, bind, pressed)
-	if Walk.session and string.lower(string.Trim(bind)) == "noclip" then
-		if pressed then Walk.ToggleNoclip() end
-		return true
-	end
-end)
 
 local function spawnPoint(session)
 	local candidates = {}
@@ -160,26 +173,45 @@ local function spawnPoint(session)
 	end
 end
 
-concommand.Add("pocketmap_walk", function()
-	if Walk.session then Walk.Leave() return end
+local createMove
+
+---@param ent Entity # the block to walk in
+function Walk.Enter(ent)
 	local ply = LocalPlayer()
-	if not IsValid(ply) or not ply:Alive() or ply:InVehicle() then return end
-	local ent = ply:GetEyeTrace().Entity
+	if Walk.session or not IsValid(ply) or not ply:Alive() or ply:InVehicle() then return end
 	local mini = IsValid(ent) and ent.Miniature
 	if not mini or mini.state ~= "ready" then
 		chat.AddText("[PocketMap] Aim at a loaded Pocket Map first.")
 		return
 	end
-	local session = setmetatable({ mini = mini, bsp = mini.bsp, nodes = mini.bsp:GetNodes(), leafs = mini.bsp:GetLeafs(), displacements = mini.displacementCollision }, Session)
+
+	-- The first time in a map: its collision is read in the background (cl_physics.lua), then this goes on
+	if mini.physics == nil then
+		if not mini.physicsPreparing then chat.AddText("[PocketMap] Preparing the collision of this map...") end
+		PocketMap.Physics.Prepare(mini, function()
+			if IsValid(ent) and not Walk.session then Walk.Enter(ent) end
+		end)
+		return
+	end
+
+	local session = setmetatable({ mini = mini, bsp = mini.bsp, nodes = mini.bsp:GetNodes(), leafs = mini.bsp:GetLeafs(), displacements = mini.displacementCollision, physics = mini.physics or nil }, Session)
 	local pos, angles = spawnPoint(session)
 	if not pos then chat.AddText("[PocketMap] No clear player spawn was found in this map.") return end
 	session.move = setmetatable({ origin = pos, velocity = Vector(), angles = angles, moveAngles = angles, buttons = 0, oldButtons = 0, forward = 0, side = 0, up = 0, maxSpeed = 320, maxClientSpeed = 320, impulse = 0, constraintCenter = Vector(), constraintRadius = 0, constraintWidth = 0, constraintSpeedFactor = 1, finalStepHeight = 0, finalIdealVelocity = Vector(), finalJumpVelocity = Vector() }, { __index = Move })
 	session.yawOffset = angles.y - ply:EyeAngles().y
 	Walk.session = session
-	chat.AddText("[PocketMap] Walking: WASD, Space to jump, Ctrl to crouch. Your noclip key (default V) toggles flight. Run pocketmap_walk again to leave.")
+	hook.Add("CreateMove", MOVE_HOOK, createMove)
+	hook.Add("HUDPaint", HUD_HOOK, drawLeaveHint)
+	chat.AddText("[PocketMap] Walking: WASD, Space to jump, Ctrl to crouch. Your noclip key (default V) toggles flight. Press " .. leaveKeyName() .. " to leave.")
+end
+
+concommand.Add("pocketmap_walk", function()
+	if Walk.session then Walk.Leave() return end
+	local ply = LocalPlayer()
+	if IsValid(ply) then Walk.Enter(ply:GetEyeTrace().Entity) end
 end)
 
-PocketMap.Hooks.Register("CreateMove", "PocketMap_Walk", function(cmd)
+function createMove(cmd)
 	local session = Walk.session
 	if not session then return end
 	local ply, mini = LocalPlayer(), session.mini
@@ -201,11 +233,18 @@ PocketMap.Hooks.Register("CreateMove", "PocketMap_Walk", function(cmd)
 			Walk.Leave()
 			ErrorNoHalt("[PocketMap] Gamemode movement callback failed: " .. tostring(err) .. "\n")
 			chat.AddText("[PocketMap] Walk mode ended because a gamemode movement callback failed; see the console.")
+		elseif not session.stepsFailed then
+			-- A problem with a sound must not stop the movement: it is reported once and the walk goes on without footsteps
+			local stepped, stepError = pcall(function() PocketMap.Footsteps.Update(session, engine.TickInterval()) end)
+			if not stepped then
+				session.stepsFailed = true
+				ErrorNoHalt("[PocketMap] Footsteps: " .. tostring(stepError) .. "\n")
+			end
 		end
 	end
 	cmd:ClearMovement()
 	cmd:ClearButtons()
-end)
+end
 
 function Walk.View(fov, zfar)
 	local session = Walk.session
@@ -219,3 +258,36 @@ function Walk.View(fov, zfar)
 	PocketMap.Water.NoteView(origin, angles, fov, near, zfar)
 	return { origin = origin, angles = angles, fov = fov, znear = near, zfar = zfar, drawviewer = true }
 end
+
+---The block the player is looking at and is close enough to use.
+local function aimedBlock(ply)
+	local trace = ply:GetEyeTrace()
+	local ent = trace.Entity
+	if not IsValid(ent) or ent:GetClass() ~= "ent_pocketmap" then return end
+	if trace.HitPos:DistToSqr(ply:EyePos()) > REACH_SQR then return end
+	return ent
+end
+
+-- Reload on a block walks in, reload inside walks out. In a walk the normal noclip binding controls the local camera session.
+-- Registered in cl_hooks.lua, so it exists as long as a tiny map does.
+PocketMap.Hooks.Register("PlayerBindPress", "PocketMap_WalkKey", function(ply, bind, pressed)
+	bind = string.lower(string.Trim(bind))
+
+	if Walk.session then
+		if bind == "noclip" then
+			if pressed then Walk.ToggleNoclip() end
+			return true
+		elseif bind == "+reload" then
+			if pressed then Walk.Leave() end
+			return true
+		end
+		return
+	end
+
+	if bind == "+reload" then
+		local ent = aimedBlock(ply)
+		if not ent or not ent.Miniature or ent.Miniature.state ~= "ready" then return end
+		if pressed then Walk.Enter(ent) end
+		return true
+	end
+end)
