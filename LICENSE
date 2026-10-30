@@ -1,0 +1,19 @@
+CC0 1.0 Universal (Public Domain Dedication)
+
+To the extent possible under law, Nak has waived all copyright and related or
+neighboring rights to PocketMap. You can copy, modify, distribute and use it,
+even for commercial purposes, all without asking permission and without
+keeping this notice.
+
+Full legal text: https://creativecommons.org/publicdomain/zero/1.0/legalcode
+
+----------------------------------------------------------------------------
+A note, not a condition:
+
+If you find this useful, and we meet some day, you can buy me a beer.
+Not required, and you don't have to keep this notice.
+----------------------------------------------------------------------------
+
+Exception: lua/pocketmap/cl_maplist.lua is based on garrysmod/lua/menu/getmaplist.lua
+by Facepunch Studios, which is under the MIT license. That file stays under
+its own notice (see its header).
