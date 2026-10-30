@@ -29,6 +29,7 @@ local CLIENT_FILES = {
 	"pocketmap/cl_props.lua",
 	"pocketmap/cl_detail.lua",
 	"pocketmap/cl_faces.lua",
+	"pocketmap/cl_displacements.lua",
 	"pocketmap/cl_sky.lua",
 	"pocketmap/cl_loader.lua",
 	"pocketmap/cl_draw.lua",

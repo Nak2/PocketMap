@@ -37,12 +37,13 @@ function Session:TraceHull(start, finish, mins, maxs, mask, out)
 	out.HitWorld, out.Entity = false, game.GetWorld()
 	out.HitNormal = Vector(0, 0, 0)
 	out.Contents, out.SurfaceProps = 0, 0
+	out.Displacement = false
 	local lo = {x = math.min(start.x, finish.x) + mins.x, y = math.min(start.y, finish.y) + mins.y, z = math.min(start.z, finish.z) + mins.z}
 	local hi = {x = math.max(start.x, finish.x) + maxs.x, y = math.max(start.y, finish.y) + maxs.y, z = math.max(start.z, finish.z) + maxs.z}
 	local seen = {}
 	for _, leaf in ipairs(self:QueryLeafs(lo, hi)) do
 		for _, brush in ipairs(leaf:GetBrushes()) do
-			if not seen[brush] and bit.band(brush.contents, mask or MASK_PLAYERSOLID) ~= 0 then
+			if not seen[brush] and not (self.displacedBrushes and self.displacedBrushes[brush]) and bit.band(brush.contents, mask or MASK_PLAYERSOLID) ~= 0 then
 				seen[brush] = true
 				local enter, leave, normal = -1, 1, nil
 				local outside, endOutside, rejected = false, false, false
@@ -80,6 +81,7 @@ function Session:TraceHull(start, finish, mins, maxs, mask, out)
 			end
 		end
 	end
+	if self.displacements then PocketMap.Displacements.Trace(self.displacements, start, finish, mins, maxs, mask, lo, hi, out) end
 	out.Hit = out.Fraction < 1 or out.StartSolid
 	out.HitWorld = out.Hit
 	out.HitPos = {x = start.x + (finish.x - start.x) * out.Fraction, y = start.y + (finish.y - start.y) * out.Fraction, z = start.z + (finish.z - start.z) * out.Fraction}
@@ -165,7 +167,7 @@ concommand.Add("pocketmap_walk", function()
 		chat.AddText("[PocketMap] Aim at a loaded Pocket Map first.")
 		return
 	end
-	local session = setmetatable({ mini = mini, bsp = mini.bsp, nodes = mini.bsp:GetNodes(), leafs = mini.bsp:GetLeafs() }, Session)
+	local session = setmetatable({ mini = mini, bsp = mini.bsp, nodes = mini.bsp:GetNodes(), leafs = mini.bsp:GetLeafs(), displacements = mini.displacementCollision, displacedBrushes = mini.displacedBrushes }, Session)
 	local pos, angles = spawnPoint(session)
 	if not pos then chat.AddText("[PocketMap] No clear player spawn was found in this map.") return end
 	session.move = setmetatable({ origin = pos, velocity = Vector(), angles = angles, moveAngles = angles, buttons = 0, oldButtons = 0, forward = 0, side = 0, up = 0, maxSpeed = 320, maxClientSpeed = 320, impulse = 0, constraintCenter = Vector(), constraintRadius = 0, constraintWidth = 0, constraintSpeedFactor = 1, finalStepHeight = 0, finalIdealVelocity = Vector(), finalJumpVelocity = Vector() }, { __index = Move })
