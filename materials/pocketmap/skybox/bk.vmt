@@ -1,0 +1,7 @@
+"UnlitGeneric"
+{
+	// The texture is a placeholder: PocketMap sets $basetexture to the sky of the map before it draws (cl_miniature.lua)
+	"$basetexture" "vgui/white"
+	"$nofog" 1
+	"$vertexcolor" 1
+}
