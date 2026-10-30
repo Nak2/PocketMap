@@ -70,6 +70,7 @@ function PocketMap.NewMiniature( ent, mapName )
 
 	mini.co = coroutine.create( function() PocketMap.Loader.Run( mini ) end )
 	active[mini] = true
+	PocketMap.Hooks.SetActive( true )
 	return mini
 end
 
@@ -107,6 +108,8 @@ function Mini:Destroy()
 
 	self.objects, self.skyObjects, self.detailMeshes, self.propGroups, self.bsp = {}, {}, {}, {}, nil
 	self.atlasTarget, self.atlasLayerTarget, self.atlasObject, self.lightmapTexture = nil, nil, nil, nil
+
+	PocketMap.Hooks.SetActive( next( active ) ~= nil )
 end
 
 ---Block -> map: the middle of the map goes in the middle of the block, scaled to fit. The engine draws a block more than
@@ -179,11 +182,11 @@ function Mini:DrawStatus()
 	cam.End3D2D()
 end
 
--- Hooks ---------------------------------------------------------------------------------------------------------------
+-- Hooks (cl_hooks.lua: only there while a tiny map exists) ---------------------------------------------------------------
 
 ---The tiny map is small, so the camera easily gets closer than the near plane (about 7 units) and the map is cut off. While a
 ---block is close the near plane moves in to half the distance. A hook that returns a view replaces the rest, so all of it is returned.
-hook.Add( "CalcView", "PocketMap_NearClip", function( _, origin, angles, fov, znear, zfar )
+PocketMap.Hooks.Register( "CalcView", "PocketMap_NearClip", function( _, origin, angles, fov, znear, zfar )
 	local nearest = math.huge
 	for mini in pairs( active ) do
 		if IsValid( mini.ent ) and mini.scaleVec then
@@ -201,7 +204,7 @@ hook.Add( "CalcView", "PocketMap_NearClip", function( _, origin, angles, fov, zn
 	return { origin = origin, angles = angles, fov = fov, znear = wanted, zfar = zfar }
 end )
 
-hook.Add( "HUDPaint", "PocketMap_Status", function()
+PocketMap.Hooks.Register( "HUDPaint", "PocketMap_Status", function()
 	for mini in pairs( active ) do
 		if IsValid( mini.ent ) and isLoading( mini ) and mini:EyeInside() then
 			mini:DrawHUD()
@@ -211,7 +214,7 @@ hook.Add( "HUDPaint", "PocketMap_Status", function()
 end )
 
 ---The time budget is shared by the blocks that are loading.
-hook.Add( "Think", "PocketMap_Load", function()
+PocketMap.Hooks.Register( "Think", "PocketMap_Load", function()
 	local count = table.Count( active )
 	if count == 0 then return end
 

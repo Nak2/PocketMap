@@ -711,7 +711,7 @@ local function clearIdlePlanes( mini )
 	end
 end
 
-hook.Add( "PreRender", "PocketMap_Water", function()
+PocketMap.Hooks.Register( "PreRender", "PocketMap_Water", function()
 	if not PocketMap.Active then return end
 
 	local view = currentEffectsView()
@@ -724,28 +724,4 @@ hook.Add( "PreRender", "PocketMap_Water", function()
 		releaseIdleTargets( mini )
 		clearIdlePlanes( mini )
 	end
-end )
-
--- ── Info ──────────────────────────────────────────────────────────────────────
-
-concommand.Add( "pocketmap_waterinfo", function()
-	for mini in pairs( PocketMap.Active or {} ) do
-		local planes = mini.waterPlanes or {}
-		print( ( "[PocketMap] %s: %d planes of water, %d faces of the underside left out" ):format( tostring( mini.mapName ), #planes, mini.waterBeneath or 0 ) )
-		print( ( "           Update Water %s, state %s, lightmap atlas %s, eye inside %s, block level %s, view %s" ):format(
-			tostring( cvWater:GetBool() ), tostring( mini.state ), tostring( mini.lightmapTexture ~= nil ), tostring( IsValid( mini.ent ) and mini:EyeInside() ),
-			tostring( IsValid( mini.ent ) and isBlockLevel( mini.ent ) ), tostring( currentEffectsView() ~= nil ) ) )
-		for i, plane in ipairs( planes ) do
-			local mat = plane.material
-			local age = plane.lastFrame and ( FrameNumber() - plane.lastFrame ) or nil
-			print( ( "           plane %d: %s at z=%d, %d faces in %d meshes, targets %dx%d, vmt %s, shader %s, reflection + refraction last drawn: %s" ):format(
-				i, plane.key, plane.z, plane.faces, #plane.meshes, plane.w, plane.h, tostring( plane.vmt ), mat and mat:GetShader() or "none",
-				age and ( age .. " frames ago" ) or "never (out of view, tilted block, no lightmap atlas, or past the " .. MAX_RENDERED_HEIGHTS .. " nearest heights)" ) )
-		end
-		for i, plane in ipairs( mini.waterLoose or {} ) do
-			print( ( "           loose %d: %s, %d faces in %d meshes, shader %s: no effects (sloped, a displacement, or past %d heights): flat fog color" ):format(
-				i, plane.key, plane.faces, #plane.meshes, plane.material and plane.material:GetShader() or "none", MAX_PLANES ) )
-		end
-	end
-	print( ( "[PocketMap] water: field of view of the nested views %s, %s" ):format( tostring( Water.fovParam ), Water.broken and ( "FAILED: " .. tostring( Water.error ) ) or "ok" ) )
 end )

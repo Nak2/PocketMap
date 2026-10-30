@@ -15,7 +15,7 @@ local function weightsOf( mini )
 	return mini.styleWeights
 end
 
-hook.Add( "Think", "PocketMap_LightStyles", function()
+PocketMap.Hooks.Register( "Think", "PocketMap_LightStyles", function()
 	tick = LightStyles.CurrentTick()
 
 	for mini in pairs( PocketMap.Active ) do

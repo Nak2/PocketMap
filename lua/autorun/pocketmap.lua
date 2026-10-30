@@ -12,6 +12,7 @@ end
 PocketMap = PocketMap or {}
 
 local CLIENT_FILES = {
+	"pocketmap/cl_hooks.lua",
 	"pocketmap/cl_rt.lua",
 	"pocketmap/cl_fit.lua",
 	"pocketmap/cl_entities.lua",
@@ -30,7 +31,6 @@ local CLIENT_FILES = {
 	"pocketmap/cl_loader.lua",
 	"pocketmap/cl_draw.lua",
 	"pocketmap/cl_lightanim.lua",
-	"pocketmap/cl_debug.lua",
 	"pocketmap/cl_maplist.lua",
 	"pocketmap/cl_ui.lua",
 }

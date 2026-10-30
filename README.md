@@ -52,8 +52,6 @@ Nothing is pre-made: no models, no exported meshes, no map-specific code. It is 
 | `pocketmap_maxmaps` | `5` | Most maps loaded at once (each uses up to 64 MB of video memory) |
 | `pocketmap_adminonly` | `0` | Server: only admins can change a block's map |
 
-`pocketmap_info` prints what every loaded block holds. The server only stores the map's name; each client builds the map itself.
-
 ## Reading the code
 
 Each file in `lua/pocketmap` is one topic, so it doubles as an example of using NikNaks. Start with `cl_loader.lua`, which lists the stages that turn a `.bsp` into meshes.
