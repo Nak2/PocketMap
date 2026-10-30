@@ -46,7 +46,7 @@ function Session:TraceHull(start, finish, mins, maxs, mask, out)
 	local seen = {}
 	for _, leaf in ipairs(self:QueryLeafs(lo, hi)) do
 		for _, brush in ipairs(leaf:GetBrushes()) do
-			if not seen[brush] and not (self.displacedBrushes and self.displacedBrushes[brush]) and bit.band(brush.contents, mask or MASK_PLAYERSOLID) ~= 0 then
+			if not seen[brush] and bit.band(brush.contents, mask or MASK_PLAYERSOLID) ~= 0 then
 				seen[brush] = true
 				local enter, leave, normal = -1, 1, nil
 				local outside, endOutside, rejected = false, false, false
@@ -170,7 +170,7 @@ concommand.Add("pocketmap_walk", function()
 		chat.AddText("[PocketMap] Aim at a loaded Pocket Map first.")
 		return
 	end
-	local session = setmetatable({ mini = mini, bsp = mini.bsp, nodes = mini.bsp:GetNodes(), leafs = mini.bsp:GetLeafs(), displacements = mini.displacementCollision, displacedBrushes = mini.displacedBrushes }, Session)
+	local session = setmetatable({ mini = mini, bsp = mini.bsp, nodes = mini.bsp:GetNodes(), leafs = mini.bsp:GetLeafs(), displacements = mini.displacementCollision }, Session)
 	local pos, angles = spawnPoint(session)
 	if not pos then chat.AddText("[PocketMap] No clear player spawn was found in this map.") return end
 	session.move = setmetatable({ origin = pos, velocity = Vector(), angles = angles, moveAngles = angles, buttons = 0, oldButtons = 0, forward = 0, side = 0, up = 0, maxSpeed = 320, maxClientSpeed = 320, impulse = 0, constraintCenter = Vector(), constraintRadius = 0, constraintWidth = 0, constraintSpeedFactor = 1, finalStepHeight = 0, finalIdealVelocity = Vector(), finalJumpVelocity = Vector() }, { __index = Move })

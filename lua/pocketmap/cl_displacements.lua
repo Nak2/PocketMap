@@ -45,14 +45,11 @@ local function buildTree(items, yield)
 end
 
 function Disp.Build(mini, job, yield)
-	local count, backing = 0, {}
+	local count = 0
 	mini:SetStatus("Building displacement collision", 0.05)
-	-- The original flat displacement brush is not a second collision surface.
-	for _, brush in pairs(job.bsp:GetBrushes()) do
-		for _, side in ipairs(brush.sides) do
-			if side.dispinfo and side.dispinfo >= 0 then backing[brush] = true break end
-		end
-	end
+	-- Do not infer collision-brush removal from side.dispinfo: VBSP can leave
+	-- that field zero on every side. Leaf brush references already select the
+	-- compiled brush collision; displacement triangles supplement that data.
 	local patches = {}
 	for _, group in pairs(job.groups) do
 		for _, face in ipairs(group) do
@@ -83,7 +80,6 @@ function Disp.Build(mini, job, yield)
 	end
 	-- A tree of patch trees limits both triangle work and query allocation.
 	mini.displacementCollision = buildTree(patches, yield)
-	mini.displacedBrushes = backing
 	mini.displacementTriangles = count
 end
 
