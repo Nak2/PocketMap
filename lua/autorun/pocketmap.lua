@@ -35,6 +35,7 @@ local CLIENT_FILES = {
 	"pocketmap/cl_lightanim.lua",
 	"pocketmap/cl_maplist.lua",
 	"pocketmap/cl_ui.lua",
+	"pocketmap/cl_gamemove.lua",
 	"pocketmap/cl_walk.lua",
 }
 

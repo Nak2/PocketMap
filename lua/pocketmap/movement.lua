@@ -273,6 +273,9 @@ do
         st.groundTrace = grounded and tr or nil
         st.groundEnt = ent
         st.engineGroundEnt = ent
+        if context then
+            context.onground, context.groundEnt = grounded, ent
+        end
 
         -- Do not cache-skip this call. The engine/default movement can clear or mutate the
         -- player ground entity outside this Lua state. Our movement state is the authority;
@@ -1084,6 +1087,21 @@ do
         mv:SetVelocity(vel)
     end
 
+    -- Establish the virtual player state before gamemode SetupMove callbacks.
+    function PocketMap.Movement.Prepare(ply, mv, session)
+        context = session
+        local st = states[session]
+        session.ducking = band(mv:GetButtons(), BTN_DUCK) ~= 0 or (st and st.ducking) or false
+        session.onground = false
+        local pos, vel = mv:GetOrigin(), mv:GetVelocity()
+        local mins, maxs = hull_for_duck(session.ducking)
+        session.waterLevel, session.waterType = cheap_water_level(ply, pos.x, pos.y, pos.z, mins, maxs)
+        if not session.noclip and vel.z <= NON_JUMP_VELOCITY then
+            local dist = st and st.onground and vel.z <= 0 and STEP_DOWN or GROUND_SNAP
+            session.onground = probe_ground(ply, pos.x, pos.y, pos.z, mins, maxs, dist, {})
+        end
+    end
+
     -- Called with movement data in BSP coordinates by the miniature walk session.
     function PocketMap.Movement.Step(ply, mv, session)
         context = session
@@ -1198,12 +1216,13 @@ do
         end
 
         st.ducking = ducking
+        session.ducking = ducking
         local mins, maxs = hull_for_duck(ducking)
 
         local sprinting = band(buttons, BTN_SPEED) ~= 0 and not ducking and fmove > 0
-        local maxSpeed = sprinting and player_run_speed(ply) or player_walk_speed(ply)
+        local maxSpeed = session.moveSpeed or (sprinting and player_run_speed(ply) or player_walk_speed(ply))
 
-        if ply.GetPlayerMaxSpeed then
+        if ply.GetPlayerMaxSpeed and not session.moveSpeed then
             local playerMaxSpeed = ply:GetPlayerMaxSpeed()
             if playerMaxSpeed and playerMaxSpeed > 0 then
                 maxSpeed = playerMaxSpeed
