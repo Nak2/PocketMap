@@ -220,6 +220,7 @@ function Loader.Run( mini )
 	if not fitToBlock( mini, job ) then return end
 	readEntities( mini, job )
 	PocketMap.Faces.Sort( mini, job )
+	PocketMap.Displacements.Build( mini, job, coroutine.yield )
 	loadMaterials( mini, job )
 	prepareLight( mini, job )
 	buildWorldMeshes( mini, job )

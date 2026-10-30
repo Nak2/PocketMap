@@ -21,11 +21,11 @@ local STATUS_TEXT = Color( 200, 200, 200 )
 local STATUS_BAR_BACK = Color( 0, 0, 0, 160 )
 local STATUS_BAR_FILL = Color( 90, 200, 120 )
 
-local Mini = {}
+local Mini = PocketMap.Mini or {}
 Mini.__index = Mini
 PocketMap.Mini = Mini
 
-local active = {}
+local active = PocketMap.Active or {}
 PocketMap.Active = active
 
 local statusOffset = Vector()
@@ -92,6 +92,9 @@ end
 function Mini:Destroy()
 	active[self] = nil
 	self.state = "removed"
+	if PocketMap.Walk and PocketMap.Walk.session and PocketMap.Walk.session.mini == self then
+		PocketMap.Walk.Leave()
+	end
 
 	destroyAll( self.objects )
 	destroyAll( self.skyObjects )
@@ -108,6 +111,7 @@ function Mini:Destroy()
 
 	self.objects, self.skyObjects, self.detailMeshes, self.propGroups, self.bsp = {}, {}, {}, {}, nil
 	self.atlasTarget, self.atlasLayerTarget, self.atlasObject, self.lightmapTexture = nil, nil, nil, nil
+	self.displacementCollision = nil
 
 	PocketMap.Hooks.SetActive( next( active ) ~= nil )
 end
@@ -207,6 +211,12 @@ PocketMap.Hooks.Register( "CalcView", "PocketMap_NearClip", function( _, origin,
 	return { origin = origin, angles = angles, fov = fov, znear = wanted, zfar = zfar }
 end )
 
+-- Repair a class left incomplete by an earlier partial auto-refresh. During
+-- normal startup these dependencies are loaded later by the autorun loader.
+if not Mini.Draw and PocketMap.Props and PocketMap.Detail and PocketMap.Sky and PocketMap.Water then
+	include("pocketmap/cl_draw.lua")
+end
+
 PocketMap.Hooks.Register( "HUDPaint", "PocketMap_Status", function()
 	for mini in pairs( active ) do
 		if IsValid( mini.ent ) and isLoading( mini ) and mini:EyeInside() then
@@ -230,3 +240,7 @@ PocketMap.Hooks.Register( "Think", "PocketMap_Load", function()
 		end
 	end
 end )
+
+-- cl_hooks.lua disables its previous registry on a full autorun refresh.
+-- Existing miniatures still need the newly registered callbacks installed.
+PocketMap.Hooks.SetActive( next( active ) ~= nil )

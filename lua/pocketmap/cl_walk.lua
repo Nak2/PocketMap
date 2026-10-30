@@ -1,4 +1,7 @@
 -- A local camera and movement session, simulated in the original BSP coordinates.
+-- Replace any always-installed hooks left by the previous walk implementation.
+hook.Remove("CreateMove", "PocketMap_Walk")
+hook.Remove("PlayerBindPress", "PocketMap_Noclip")
 PocketMap.Walk = {}
 local Walk = PocketMap.Walk
 local Session = {}
@@ -37,6 +40,7 @@ function Session:TraceHull(start, finish, mins, maxs, mask, out)
 	out.HitWorld, out.Entity = false, game.GetWorld()
 	out.HitNormal = Vector(0, 0, 0)
 	out.Contents, out.SurfaceProps = 0, 0
+	out.Displacement = false
 	local lo = {x = math.min(start.x, finish.x) + mins.x, y = math.min(start.y, finish.y) + mins.y, z = math.min(start.z, finish.z) + mins.z}
 	local hi = {x = math.max(start.x, finish.x) + maxs.x, y = math.max(start.y, finish.y) + maxs.y, z = math.max(start.z, finish.z) + maxs.z}
 	local seen = {}
@@ -80,19 +84,34 @@ function Session:TraceHull(start, finish, mins, maxs, mask, out)
 			end
 		end
 	end
+	if self.displacements then PocketMap.Displacements.Trace(self.displacements, start, finish, mins, maxs, mask, lo, hi, out) end
 	out.Hit = out.Fraction < 1 or out.StartSolid
 	out.HitWorld = out.Hit
 	out.HitPos = {x = start.x + (finish.x - start.x) * out.Fraction, y = start.y + (finish.y - start.y) * out.Fraction, z = start.z + (finish.z - start.z) * out.Fraction}
 	return out
 end
 
-local fields = { Origin = "origin", Velocity = "velocity", Angles = "angles", Buttons = "buttons", ForwardSpeed = "forward", SideSpeed = "side", UpSpeed = "up", MaxSpeed = "maxSpeed", MaxClientSpeed = "maxSpeed" }
+local fields = { Origin = "origin", Velocity = "velocity", Angles = "angles", MoveAngles = "moveAngles", AbsMoveAngles = "moveAngles", Buttons = "buttons", OldButtons = "oldButtons", ForwardSpeed = "forward", SideSpeed = "side", UpSpeed = "up", MaxSpeed = "maxSpeed", MaxClientSpeed = "maxClientSpeed", ImpulseCommand = "impulse", ConstraintCenter = "constraintCenter", ConstraintRadius = "constraintRadius", ConstraintWidth = "constraintWidth", ConstraintSpeedFactor = "constraintSpeedFactor", FinalStepHeight = "finalStepHeight", FinalIdealVelocity = "finalIdealVelocity", FinalJumpVelocity = "finalJumpVelocity" }
 local Move = {}
+local function copyValue(value)
+	if isvector(value) then return Vector(value.x, value.y, value.z) end
+	if isangle(value) then return Angle(value.p, value.y, value.r) end
+	return value
+end
 for name, field in pairs(fields) do
 	local key = field
-	Move["Get" .. name] = function(self) return self[key] end
-	Move["Set" .. name] = function(self, value) self[key] = value end
+	Move["Get" .. name] = function(self) return copyValue(self[key]) end
+	Move["Set" .. name] = function(self, value) self[key] = copyValue(value) end
 end
+
+function Move:KeyDown(key) return bit.band(self.buttons, key) ~= 0 end
+function Move:KeyPressed(key) return self:KeyDown(key) and bit.band(self.oldButtons, key) == 0 end
+function Move:KeyReleased(key) return not self:KeyDown(key) and bit.band(self.oldButtons, key) ~= 0 end
+function Move:AddKey(key) self.buttons = bit.bor(self.buttons, key) end
+function Move:RemoveKeys(key) self.buttons = bit.band(self.buttons, bit.bnot(key)) end
+function Move:SetMaxSpeed(speed) self.maxSpeed, self.speedModified = speed, true end
+function Move:SetMaxClientSpeed(speed) self.maxClientSpeed, self.maxSpeed, self.speedModified = speed, speed, true end
+function Move:GetConstraintPastRadius() return self.origin:DistToSqr(self.constraintCenter) > self.constraintRadius * self.constraintRadius end
 
 function Walk.Leave()
 	Walk.session = nil
@@ -118,7 +137,7 @@ end
 concommand.Add("pocketmap_noclip", Walk.ToggleNoclip)
 
 -- Consume the normal noclip binding so it controls the local camera session.
-hook.Add("PlayerBindPress", "PocketMap_Noclip", function(_, bind, pressed)
+PocketMap.Hooks.Register("PlayerBindPress", "PocketMap_Noclip", function(_, bind, pressed)
 	if Walk.session and string.lower(string.Trim(bind)) == "noclip" then
 		if pressed then Walk.ToggleNoclip() end
 		return true
@@ -151,16 +170,16 @@ concommand.Add("pocketmap_walk", function()
 		chat.AddText("[PocketMap] Aim at a loaded Pocket Map first.")
 		return
 	end
-	local session = setmetatable({ mini = mini, bsp = mini.bsp, nodes = mini.bsp:GetNodes(), leafs = mini.bsp:GetLeafs() }, Session)
+	local session = setmetatable({ mini = mini, bsp = mini.bsp, nodes = mini.bsp:GetNodes(), leafs = mini.bsp:GetLeafs(), displacements = mini.displacementCollision }, Session)
 	local pos, angles = spawnPoint(session)
 	if not pos then chat.AddText("[PocketMap] No clear player spawn was found in this map.") return end
-	session.move = setmetatable({ origin = pos, velocity = Vector(), angles = angles, buttons = 0, forward = 0, side = 0, up = 0, maxSpeed = 320 }, { __index = Move })
+	session.move = setmetatable({ origin = pos, velocity = Vector(), angles = angles, moveAngles = angles, buttons = 0, oldButtons = 0, forward = 0, side = 0, up = 0, maxSpeed = 320, maxClientSpeed = 320, impulse = 0, constraintCenter = Vector(), constraintRadius = 0, constraintWidth = 0, constraintSpeedFactor = 1, finalStepHeight = 0, finalIdealVelocity = Vector(), finalJumpVelocity = Vector() }, { __index = Move })
 	session.yawOffset = angles.y - ply:EyeAngles().y
 	Walk.session = session
 	chat.AddText("[PocketMap] Walking: WASD, Space to jump, Ctrl to crouch. Your noclip key (default V) toggles flight. Run pocketmap_walk again to leave.")
 end)
 
-hook.Add("CreateMove", "PocketMap_Walk", function(cmd)
+PocketMap.Hooks.Register("CreateMove", "PocketMap_Walk", function(cmd)
 	local session = Walk.session
 	if not session then return end
 	local ply, mini = LocalPlayer(), session.mini
@@ -169,11 +188,20 @@ hook.Add("CreateMove", "PocketMap_Walk", function(cmd)
 	local number = cmd:CommandNumber()
 	if number > 0 and session.command ~= number then
 		session.command = number
+		mv.oldButtons = mv.buttons
 		mv.buttons, mv.forward, mv.side, mv.up = cmd:GetButtons(), cmd:GetForwardMove(), cmd:GetSideMove(), cmd:GetUpMove()
 		local angles = cmd:GetViewAngles()
 		mv.angles = Angle(angles.p, angles.y + session.yawOffset, 0)
-		mv.maxSpeed = ply:GetRunSpeed()
-		PocketMap.Movement.Step(ply, mv, session)
+		mv.moveAngles = mv.angles
+		mv.maxSpeed, mv.maxClientSpeed = ply:GetRunSpeed(), ply:GetRunSpeed()
+		mv.speedModified = false
+		mv.impulse = cmd:GetImpulse()
+		local ok, err = PocketMap.GamemodeMovement.Step(ply, mv, cmd, session)
+		if not ok then
+			Walk.Leave()
+			ErrorNoHalt("[PocketMap] Gamemode movement callback failed: " .. tostring(err) .. "\n")
+			chat.AddText("[PocketMap] Walk mode ended because a gamemode movement callback failed; see the console.")
+		end
 	end
 	cmd:ClearMovement()
 	cmd:ClearButtons()
