@@ -92,6 +92,9 @@ end
 function Mini:Destroy()
 	active[self] = nil
 	self.state = "removed"
+	if PocketMap.Walk and PocketMap.Walk.session and PocketMap.Walk.session.mini == self then
+		PocketMap.Walk.Leave()
+	end
 
 	destroyAll( self.objects )
 	destroyAll( self.skyObjects )

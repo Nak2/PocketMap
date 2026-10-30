@@ -36,6 +36,12 @@ function Bridge.Step(ply, mv, cmd, session)
 		KeyReleased = function(_, key) return mv:KeyReleased(key) end,
 	}
 	local ok, err = xpcall(function()
+		-- Auto-refresh can load this bridge while the old movement module is
+		-- still resident. Refresh the dependency before using the new API.
+		if not PocketMap.Movement or type(PocketMap.Movement.Prepare) ~= "function" then
+			include("pocketmap/movement.lua")
+		end
+		assert(PocketMap.Movement and type(PocketMap.Movement.Prepare) == "function", "PocketMap movement module is out of date; restart the game/server to load matching Lua files")
 		PocketMap.Movement.Prepare(ply, mv, session)
 		-- Scope player reads to the synchronous callback chain. Other players
 		-- keep their normal methods; every override is restored even on errors.

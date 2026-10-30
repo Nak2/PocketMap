@@ -1,4 +1,7 @@
 -- A local camera and movement session, simulated in the original BSP coordinates.
+-- Replace any always-installed hooks left by the previous walk implementation.
+hook.Remove("CreateMove", "PocketMap_Walk")
+hook.Remove("PlayerBindPress", "PocketMap_Noclip")
 PocketMap.Walk = {}
 local Walk = PocketMap.Walk
 local Session = {}
@@ -134,7 +137,7 @@ end
 concommand.Add("pocketmap_noclip", Walk.ToggleNoclip)
 
 -- Consume the normal noclip binding so it controls the local camera session.
-hook.Add("PlayerBindPress", "PocketMap_Noclip", function(_, bind, pressed)
+PocketMap.Hooks.Register("PlayerBindPress", "PocketMap_Noclip", function(_, bind, pressed)
 	if Walk.session and string.lower(string.Trim(bind)) == "noclip" then
 		if pressed then Walk.ToggleNoclip() end
 		return true
@@ -176,7 +179,7 @@ concommand.Add("pocketmap_walk", function()
 	chat.AddText("[PocketMap] Walking: WASD, Space to jump, Ctrl to crouch. Your noclip key (default V) toggles flight. Run pocketmap_walk again to leave.")
 end)
 
-hook.Add("CreateMove", "PocketMap_Walk", function(cmd)
+PocketMap.Hooks.Register("CreateMove", "PocketMap_Walk", function(cmd)
 	local session = Walk.session
 	if not session then return end
 	local ply, mini = LocalPlayer(), session.mini

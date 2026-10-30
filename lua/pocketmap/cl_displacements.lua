@@ -61,9 +61,15 @@ function Disp.Build(mini, job, yield)
 				local contents = info and info.contents or CONTENTS_SOLID
 				if bit.band(contents, MASK_PLAYERSOLID) ~= 0 then
 					local verts = face:GenerateVertexTriangleData()
+					-- Vertex shading normals may follow the stored BSP plane.
+					-- Collision must use the outward face side, including reversed
+					-- planes on surfaces such as surf_ace's iceberg tops.
+					local reference = face.plane and face.plane.normal or (verts[1] and verts[1].normal)
+					local sign = face.side == 1 and -1 or 1
+					local facing = reference and {x = reference.x * sign, y = reference.y * sign, z = reference.z * sign}
 					local patch = {}
 					for i = 1, #verts - 2, 3 do
-						local t = triangle(verts[i].pos, verts[i + 1].pos, verts[i + 2].pos, verts[i].normal, contents)
+						local t = triangle(verts[i].pos, verts[i + 1].pos, verts[i + 2].pos, facing, contents)
 						if t then patch[#patch + 1] = t end
 						if yield and i % 192 == 1 then yield() end
 					end
