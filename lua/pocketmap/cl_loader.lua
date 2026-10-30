@@ -56,6 +56,8 @@ local function readLumps( mini, job )
 		{ "texture info", bsp.GetTexInfo },
 		{ "texture data", bsp.GetTexData },
 		{ "nodes and leafs", bsp.GetNodes },
+		{ "collision brushes", bsp.GetBrushes },
+		{ "leaf brushes", bsp.GetLeafBrushes },
 		{ "faces", bsp.GetFaces },
 		{ "displacements", bsp.GetDispInfo },
 		{ "displacement vertices", bsp.GetDispVerts },
@@ -211,6 +213,9 @@ function Loader.Run( mini )
 	local job = {}
 
 	if not openMap( mini, job ) then return end
+	mini:SetStatus( "Mounting packed textures", 0.01 )
+	mini.packedMaterials = PocketMap.Pak.Mount( job.bsp, coroutine.yield )
+	coroutine.yield()
 	readLumps( mini, job )
 	if not fitToBlock( mini, job ) then return end
 	readEntities( mini, job )

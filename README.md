@@ -44,6 +44,10 @@ Nothing is pre-made: no models, no exported meshes, no map-specific code. It is 
 
 ## Settings
 
+To walk through a loaded map, aim at its block and run `pocketmap_walk` in the console. Use WASD, Space to jump, Shift to run, and Ctrl to crouch. Your noclip key (default V) or `pocketmap_noclip` toggles Source-style flight through walls: look to steer, Space to rise, Shift for faster flight, and Ctrl for slower flight. Run `pocketmap_walk` again to return to your player. This moves a local camera through the map from a clear player spawn; your player remains in the main world. Movement uses BSP brush collision and water contents. Props, displacement terrain, and moving brush entities do not have dedicated collision in this mode.
+
+Walk mode reads the running server's movement convars, including `sv_airaccelerate`, and the player's movement speeds, jump power, and gravity. Custom gamemode movement hooks are not automatically simulated inside the miniature.
+
 | ConVar | Default | |
 | --- | --- | --- |
 | `pocketmap_propmeshes` | `1` | Bake models into the map instead of one `ClientsideModel` per prop |

@@ -12,9 +12,11 @@ end
 PocketMap = PocketMap or {}
 
 local CLIENT_FILES = {
+	"pocketmap/movement.lua",
 	"pocketmap/cl_rt.lua",
 	"pocketmap/cl_fit.lua",
 	"pocketmap/cl_entities.lua",
+	"pocketmap/cl_pak.lua",
 	"pocketmap/cl_materials.lua",
 	"pocketmap/cl_lightstyles.lua",
 	"pocketmap/cl_hologram.lua",
@@ -33,6 +35,7 @@ local CLIENT_FILES = {
 	"pocketmap/cl_debug.lua",
 	"pocketmap/cl_maplist.lua",
 	"pocketmap/cl_ui.lua",
+	"pocketmap/cl_walk.lua",
 }
 
 if SERVER then
