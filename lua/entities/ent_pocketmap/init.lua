@@ -4,7 +4,6 @@ include( "shared.lua" )
 
 local ORIGIN_HEIGHT_ABOVE_FLOOR = 24
 local MAX_REACH_SQR = 400 * 400
-local MAX_NAME_LENGTH = 64
 local SELECT_COOLDOWN = 1
 local BLOCK_CHANGE_COOLDOWN = 3
 local USE_COOLDOWN = 0.25
@@ -16,7 +15,6 @@ local WALK_RECIPIENT_REFRESH_SECONDS = 0.5
 local WALK_LEAVE_GRACE_SECONDS = 0.25
 local WALK_STALE_SECONDS = 1.5
 local WALK_STALE_CHECK_SECONDS = 0.5
-local WALK_BOUNDS_MARGIN = 64
 local MAX_WALK_COORDINATE = 32768
 local MAX_WALK_SPEED = 10000
 local WALKER_ID = "PocketMap_Walkers"
@@ -35,12 +33,6 @@ local function tryStartCooldown( ply, field, delay )
 	return true
 end
 
-local function isValidMapName( name )
-	if name == "" then return true end
-	if #name > MAX_NAME_LENGTH then return false end
-
-	return string.match( name, "^[%w_%-][%w_%-%.]*$" ) ~= nil
-end
 
 local function isWithinReach( ply, ent )
 	local eye = ply:EyePos()
@@ -79,6 +71,7 @@ function ENT:Initialize()
 		SafeRemoveEntity( self )
 		return
 	end
+	if not PocketMap.IsValidMapName( self:GetMapName() ) then self:SetMapName( "" ) end
 	self:SetModel( self.BlockModel )
 	self:PhysicsInit( SOLID_VPHYSICS )
 	self:SetMoveType( MOVETYPE_VPHYSICS )
@@ -104,10 +97,6 @@ local function stripBspExtension( name )
 	return ( string.gsub( name, "%.bsp$", "" ) )
 end
 
-local function isInstalledOnServer( name )
-	return name == "" or file.Exists( "maps/" .. name .. ".bsp", "GAME" )
-end
-
 net.Receive( "PocketMap_Select", function( _, ply )
 	if not tryStartCooldown( ply, "PocketMapNextSelect", SELECT_COOLDOWN ) then return end
 
@@ -115,7 +104,7 @@ net.Receive( "PocketMap_Select", function( _, ply )
 	local name = stripBspExtension( net.ReadString() )
 
 	if not isPocketMap( ent ) or not isWithinReach( ply, ent ) then return end
-	if not isValidMapName( name ) or not isInstalledOnServer( name ) then return end
+	if not PocketMap.IsValidMapName( name ) then return end
 	if name == ent:GetMapName() or not mayChangeMap( ply, ent, name ) then return end
 
 	if not tryStartCooldown( ent, "PocketMapNextChange", BLOCK_CHANGE_COOLDOWN ) then
@@ -145,29 +134,6 @@ local function isValidWalkState( velocity, position, angles )
 		and isFinite( angles.p ) and isFinite( angles.y ) and isFinite( angles.r )
 end
 
-local worldBoundsByMap = {}
-
-local function worldBoundsOf( mapName )
-	local bounds = worldBoundsByMap[mapName]
-	if bounds ~= nil then return bounds or nil end
-
-	local ok, bsp = pcall( NikNaks.Map, mapName )
-	local world = ok and bsp and bsp:GetBModels()[0]
-	bounds = world and { mins = world.mins, maxs = world.maxs } or false
-	worldBoundsByMap[mapName] = bounds
-	return bounds or nil
-end
-
-local function isInsideWorldBounds( position, mapName )
-	local bounds = worldBoundsOf( mapName )
-	if not bounds then return false end
-
-	local mins, maxs, margin = bounds.mins, bounds.maxs, WALK_BOUNDS_MARGIN
-	return position.x >= mins.x - margin and position.x <= maxs.x + margin
-		and position.y >= mins.y - margin and position.y <= maxs.y + margin
-		and position.z >= mins.z - margin and position.z <= maxs.z + margin
-end
-
 local function isWithinWalkReach( ply, block )
 	local eye = ply:EyePos()
 	return block:NearestPoint( eye ):DistToSqr( eye ) <= WALK_REACH_SQR
@@ -186,7 +152,14 @@ local function refreshRecipients( walker )
 	walker.nextRecipientRefresh = CurTime() + WALK_RECIPIENT_REFRESH_SECONDS
 end
 
+local function removeInvalidPlayers( players )
+	for i = #players, 1, -1 do
+		if not IsValid( players[i] ) then table.remove( players, i ) end
+	end
+end
+
 local function relayWalker( walker, active, unreliable )
+	removeInvalidPlayers( walker.recipients )
 	if #walker.recipients == 0 then return end
 
 	net.Start( "PocketMap_PlyRelay", unreliable )
@@ -289,7 +262,7 @@ net.Receive( "PocketMap_Ply", function( _, ply )
 
 	local velocity, position, angles = net.ReadVector(), net.ReadVector(), net.ReadAngle()
 	if not isValidWalkState( velocity, position, angles ) then return end
-	if not isInsideWorldBounds( position, block:GetMapName() ) then return end
+	if block:IsOutsideBox( block:LocalToWorld( position ) ) then return end
 
 	updateWalker( ply, block, velocity, position, angles )
 end )

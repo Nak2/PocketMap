@@ -131,11 +131,13 @@ function Mini:UpdateMatrix()
 	matrix:Translate( self.negCenter )
 end
 
+function Mini:BlockPosition( mapPosition )
+	return ( mapPosition - self.mapCenter ) * self.scale + self.boxCenter
+end
+
 ---The origin of the view being rendered decides, not the player: a camera outside the block is outside.
 function Mini:EyeInside()
-	local eye = self.ent:WorldToLocal( EyePos() )
-	local mins, maxs = self.ent.BoxMins, self.ent.BoxMaxs
-	return eye.x >= mins.x and eye.x <= maxs.x and eye.y >= mins.y and eye.y <= maxs.y and eye.z >= mins.z and eye.z <= maxs.z
+	return not self.ent:IsOutsideBox( EyePos() )
 end
 
 -- Loading status ------------------------------------------------------------------------------------------------------

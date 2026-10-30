@@ -131,12 +131,16 @@ local function inflate(data, size, yield)
 	return table.concat(chunks)
 end
 
+local MAX_ENTRY_BYTES = 134217728
+local MAX_TOTAL_BYTES = 268435456
+local MAX_ENTRIES = 8192
+
 local function isNewSafeMaterialPath(name)
 	return name:match("^materials/") ~= nil
 		and (name:match("%.vmt$") ~= nil or name:match("%.vtf$") ~= nil)
 		and not name:find("..", 1, true)
 		and not name:find(":", 1, true)
-		and not name:find("%z")
+		and not name:find("%c")
 		and not file.Exists(name, "GAME")
 end
 
@@ -150,6 +154,7 @@ function Pak.Read(zip, yield)
 	assert(ending, "Missing BSP ZIP directory")
 	assert(uint(zip, ending + 4, 2) == 0 and uint(zip, ending + 6, 2) == 0, "Multi-disk ZIP is unsupported")
 	local count, pos = uint(zip, ending + 10, 2), uint(zip, ending + 16, 4) + 1
+	local totalBytes = 0
 	for _ = 1, count do
 		assert(zip:sub(pos, pos + 3) == "PK\1\2", "Invalid BSP ZIP entry")
 		local flags, method = uint(zip, pos + 8, 2), uint(zip, pos + 10, 2)
@@ -159,7 +164,9 @@ function Pak.Read(zip, yield)
 		local name = zip:sub(pos + 46, pos + 45 + nameLength):lower():gsub("\\", "/")
 		if isNewSafeMaterialPath(name) then
 			assert(flags % 2 == 0, "Encrypted BSP material")
-			assert(size <= 268435456, "BSP texture exceeds 256 MB")
+			assert(size <= MAX_ENTRY_BYTES, "BSP texture is too large")
+			totalBytes = totalBytes + size
+			assert(totalBytes <= MAX_TOTAL_BYTES and #entries < MAX_ENTRIES, "The packed materials of the BSP are too large")
 			assert(zip:sub(offset, offset + 3) == "PK\3\4", "Invalid ZIP local header")
 			local first = offset + 30 + uint(zip, offset + 26, 2) + uint(zip, offset + 28, 2)
 			assert(first + packed - 1 <= #zip, "Truncated packed material")
@@ -186,7 +193,7 @@ end
 function Pak.Mount(bsp, yield)
 	local zip = bsp:GetLumpString(40)
 	if #zip == 0 then return 0 end
-	local key = util.CRC(zip)
+	local key = util.CRC(zip) .. "_" .. #zip
 	if mounted[key] then return mounted[key] end
 	local entries = Pak.Read(zip, yield)
 	if #entries == 0 then return 0 end

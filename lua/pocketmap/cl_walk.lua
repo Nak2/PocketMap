@@ -131,7 +131,6 @@ local TELEPORT_BLOCK_FLASH_RADIUS = 20
 local TELEPORT_PLAYER_FLASH_RADIUS = 6
 local TELEPORT_PLAYER_FLASH_HEIGHT = 36
 local WALK_SEND_INTERVAL = 0.05
-local LEAVE_MAP_MARGIN = 64
 local KEY_HINT_CAP_SIZE = 48
 local KEY_HINT_GAP = 12
 local KEY_HINT_BOTTOM_MARGIN = 48
@@ -170,12 +169,13 @@ local function sendWalkState(session, active, unreliable)
 	local block = session.mini.ent
 	if not IsValid(block) then return end
 
+	local mini = session.mini
 	net.Start("PocketMap_Ply", unreliable)
 		net.WriteEntity(block)
 		net.WriteBool(active)
 		if active then
-			net.WriteVector(session.move.velocity)
-			net.WriteVector(session.move.origin)
+			net.WriteVector(session.move.velocity * mini.scale)
+			net.WriteVector(block:ClampToBox(mini:BlockPosition(session.move.origin)))
 			net.WriteAngle(session.move.angles)
 		end
 	net.SendToServer()
@@ -369,14 +369,11 @@ concommand.Add("pocketmap_walk", function()
 	if IsValid(ply) then Walk.Enter(ply:GetEyeTrace().Entity) end
 end)
 
-local function isNoclippingOutsideMap(session)
+local function isNoclippingOutsideBlock(session)
 	if not session.noclip then return false end
 
-	local origin, mins, maxs = session.move.origin, session.mini.mapMins, session.mini.mapMaxs
-	local margin = LEAVE_MAP_MARGIN
-	return origin.x < mins.x - margin or origin.x > maxs.x + margin
-		or origin.y < mins.y - margin or origin.y > maxs.y + margin
-		or origin.z < mins.z - margin or origin.z > maxs.z + margin
+	local mini = session.mini
+	return mini.ent:IsOutsideBox(mini.ent:LocalToWorld(mini:BlockPosition(session.move.origin)))
 end
 
 local function updateFootstepsOnce(session)
@@ -411,7 +408,7 @@ function createMove(cmd)
 			Walk.Leave()
 			ErrorNoHalt("[PocketMap] Gamemode movement callback failed: " .. tostring(err) .. "\n")
 			chat.AddText("[PocketMap] Walk mode ended because a gamemode movement callback failed; see the console.")
-		elseif isNoclippingOutsideMap(session) then
+		elseif isNoclippingOutsideBlock(session) then
 			Walk.Leave()
 		else
 			updateFootstepsOnce(session)

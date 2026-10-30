@@ -100,15 +100,9 @@ local function animate( walker, model, speed, now )
 	model:SetPoseParameter( "move_y", 0 )
 end
 
-local function clampedToMap( mini, position )
-	local mins, maxs = mini.mapMins, mini.mapMaxs
-	return Vector( math.Clamp( position.x, mins.x, maxs.x ), math.Clamp( position.y, mins.y, maxs.y ), math.Clamp( position.z, mins.z, maxs.z ) )
-end
-
-local function worldPosition( walker, mini, now )
+local function worldPosition( walker, now )
 	local elapsed = math.min( now - walker.receivedAt, MAX_EXTRAPOLATION_SECONDS )
-	local mapPosition = clampedToMap( mini, walker.position + walker.velocity * elapsed )
-	return walker.block:LocalToWorld( ( mapPosition - mini.mapCenter ) * mini.scale + mini.boxCenter )
+	return walker.block:LocalToWorld( walker.block:ClampToBox( walker.position + walker.velocity * elapsed ) )
 end
 
 local function facingYaw( walker, speed )
@@ -125,13 +119,12 @@ local function drawWalker( walker, now )
 	local model = modelOf( walker, ply )
 	if not model then return end
 
-	local speed = walker.velocity:Length2D()
+	local speed = walker.velocity:Length2D() / mini.scale
 	copyAppearance( walker, model, ply, now )
 	animate( walker, model, speed, now )
 
-	local position = worldPosition( walker, mini, now )
 	model:SetModelScale( mini.scale * MODEL_SCALE )
-	model:SetPos( position )
+	model:SetPos( worldPosition( walker, now ) )
 	model:SetAngles( block:LocalToWorldAngles( Angle( 0, facingYaw( walker, speed ), 0 ) ) )
 	model:DrawModel()
 end
@@ -149,9 +142,9 @@ local function drawSelf( now )
 	if not isViewingThroughAnotherEntityWhileWalking() then return removeModel( selfWalker ) end
 
 	local session = PocketMap.Walk.session
-	local move = session.move
-	selfWalker.index, selfWalker.block = LocalPlayer():EntIndex(), session.mini.ent
-	selfWalker.velocity, selfWalker.position, selfWalker.angles, selfWalker.receivedAt = move.velocity, move.origin, move.angles, now
+	local mini, move = session.mini, session.move
+	selfWalker.index, selfWalker.block = LocalPlayer():EntIndex(), mini.ent
+	selfWalker.velocity, selfWalker.position, selfWalker.angles, selfWalker.receivedAt = move.velocity * mini.scale, mini:BlockPosition( move.origin ), move.angles, now
 	if IsValid( selfWalker.block ) then drawWalker( selfWalker, now ) end
 end
 
