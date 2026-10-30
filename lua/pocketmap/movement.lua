@@ -1093,6 +1093,7 @@ do
         local st = states[session]
         session.ducking = band(mv:GetButtons(), BTN_DUCK) ~= 0 or (st and st.ducking) or false
         session.onground = false
+        session.onladder = st ~= nil and st.onladder == true
         local pos, vel = mv:GetOrigin(), mv:GetVelocity()
         local mins, maxs = hull_for_duck(session.ducking)
         session.waterLevel, session.waterType = cheap_water_level(ply, pos.x, pos.y, pos.z, mins, maxs)

@@ -44,6 +44,13 @@ local function buildTree(items, yield)
 	return node
 end
 
+local SURF_NOHULL_COLL = 0x4
+
+-- NikNaks reads the 32-bit minTess as flags (low half) and minTess (high half): the high bit marks it as holding flags
+function Disp.IsPassableToHulls(info)
+	return info ~= nil and info.minTess < 0 and bit.band(info.flags or 0, SURF_NOHULL_COLL) ~= 0
+end
+
 function Disp.Build(mini, job, yield)
 	local count = 0
 	mini:SetStatus("Building displacement collision", 0.05)
@@ -56,10 +63,7 @@ function Disp.Build(mini, job, yield)
 			if face:IsWorld() and face:IsDisplacement() then
 				local info = face:GetDisplacementInfo()
 				local contents = info and info.contents or CONTENTS_SOLID
-				-- The high bit of minTess says the rest of it holds flags (builddisp.cpp, InitDispInfo). NikNaks reads the low half as
-				-- flags and the high half as minTess, so that is negative. SURF_NOHULL_COLL (0x4): hulls pass through
-				local noHull = info and info.minTess < 0 and bit.band(info.flags or 0, 0x4) ~= 0
-				if bit.band(contents, MASK_PLAYERSOLID) ~= 0 and not noHull then
+				if bit.band(contents, MASK_PLAYERSOLID) ~= 0 and not Disp.IsPassableToHulls(info) then
 					local verts = face:GenerateVertexTriangleData()
 					-- Vertex shading normals may follow the stored BSP plane.
 					-- Collision must use the outward face side, including reversed
@@ -71,7 +75,7 @@ function Disp.Build(mini, job, yield)
 					for i = 1, #verts - 2, 3 do
 						local t = triangle(verts[i].pos, verts[i + 1].pos, verts[i + 2].pos, facing, contents)
 						if t then
-							t.texinfo = face.texinfo -- for the sound of a step (cl_footsteps.lua)
+							t.texinfo = face.texinfo
 							patch[#patch + 1] = t
 						end
 						if yield and i % 192 == 1 then yield() end
@@ -135,7 +139,7 @@ local function sweep(t, start, finish, mins, maxs, out)
 	end
 	if enter >= 0 and enter < out.Fraction then
 		out.Fraction, out.HitNormal, out.Contents = enter, n, t.contents
-		out.Displacement, out.Texinfo = true, t.texinfo
+		out.Displacement, out.Texinfo, out.SurfaceName = true, t.texinfo, nil
 	end
 end
 

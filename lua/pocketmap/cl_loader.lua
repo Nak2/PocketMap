@@ -209,12 +209,9 @@ local function buildWorldMeshes( mini, job )
 	coroutine.yield()
 end
 
-function Loader.Run( mini )
-	local job = {}
-
-	if not openMap( mini, job ) then return end
+local function mountPackedMaterialsIfPossible( mini, job )
 	mini:SetStatus( "Mounting packed textures", 0.01 )
-	-- A broken pakfile only costs the materials in it, not the map
+
 	local ok, result = pcall( PocketMap.Pak.Mount, job.bsp, coroutine.yield )
 	if ok then
 		mini.packedMaterials = result
@@ -222,6 +219,13 @@ function Loader.Run( mini )
 		print( "[PocketMap] " .. mini.mapName .. ": the packed materials were not mounted (" .. tostring( result ) .. ")" )
 	end
 	coroutine.yield()
+end
+
+function Loader.Run( mini )
+	local job = {}
+
+	if not openMap( mini, job ) then return end
+	mountPackedMaterialsIfPossible( mini, job )
 	readLumps( mini, job )
 	if not fitToBlock( mini, job ) then return end
 	readEntities( mini, job )

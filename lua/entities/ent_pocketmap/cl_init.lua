@@ -183,6 +183,7 @@ function ENT:DrawLoadedMiniature( mini )
 	mini:Draw( "translucent" )
 	drawAsGlass( self, GLASS_ALPHA_LOADED )
 	mini:DrawStatus()
+	if mini.state == "ready" then self:DrawPickAnotherMapHint() end
 end
 
 ---@param failed table? # the miniature, if it failed to load
@@ -232,8 +233,17 @@ end
 function ENT:DrawHint( failed )
 	if not isInHintRange( self ) then return end
 
-	local text, detail, color = self:GetHintText( failed )
+	self:DrawHintText( self:GetHintText( failed ) )
+end
 
+function ENT:DrawPickAnotherMapHint()
+	local walk = PocketMap.Walk
+	if walk and walk.session or not isInHintRange( self ) then return end
+
+	self:DrawHintText( "Press E to pick another map", nil, COLOR_HINT )
+end
+
+function ENT:DrawHintText( text, detail, color )
 	hintOffset.z = self.BoxMaxs.z + HINT_HEIGHT_ABOVE_BOX
 	hintAngle.y = LocalPlayer():EyeAngles().y - 90
 
