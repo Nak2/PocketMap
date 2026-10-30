@@ -126,6 +126,11 @@ local LEAVE_SOUND = "ambient/levels/advisor_barn/ol07_advisor_00_12_11.wav"
 local ENTER_FADE_SECONDS = 1
 local ENTER_FADE_HOLD_FRACTION = 0.2
 local ENTER_FADE_COLOR = Color(190, 215, 255)
+local TELEPORT_FLASH_EFFECT, TELEPORT_RING_EFFECT = "cball_bounce", "VortDispel"
+local TELEPORT_BLOCK_FLASH_RADIUS = 20
+local TELEPORT_PLAYER_FLASH_RADIUS = 6
+local TELEPORT_PLAYER_FLASH_HEIGHT = 36
+local WALK_SEND_INTERVAL = 0.05
 local LEAVE_MAP_MARGIN = 64
 local KEY_HINT_CAP_SIZE = 48
 local KEY_HINT_GAP = 12
@@ -143,12 +148,56 @@ surface.CreateFont(KEYCAP_FONT, { font = "Tahoma", size = 84, weight = 800, anti
 
 local keyCapMatrix, keyCapTranslation, keyCapScale = Matrix(), Vector(), Vector()
 
+local function playEffect(name, origin, radius)
+	local data = EffectData()
+	data:SetOrigin(origin)
+	data:SetNormal(vector_up)
+	data:SetRadius(radius or 0)
+	util.Effect(name, data)
+end
+
+local function playTeleportEffects(session, ply)
+	local block = session.mini.ent
+	if IsValid(block) then playEffect(TELEPORT_FLASH_EFFECT, block:LocalToWorld((block.BoxMins + block.BoxMaxs) / 2), TELEPORT_BLOCK_FLASH_RADIUS) end
+	if not IsValid(ply) then return end
+
+	local feet = ply:GetPos()
+	playEffect(TELEPORT_RING_EFFECT, feet)
+	playEffect(TELEPORT_FLASH_EFFECT, feet + vector_up * TELEPORT_PLAYER_FLASH_HEIGHT, TELEPORT_PLAYER_FLASH_RADIUS)
+end
+
+local function sendWalkState(session, active, unreliable)
+	local block = session.mini.ent
+	if not IsValid(block) then return end
+
+	net.Start("PocketMap_Ply", unreliable)
+		net.WriteEntity(block)
+		net.WriteBool(active)
+		if active then
+			net.WriteVector(session.move.velocity)
+			net.WriteVector(session.move.origin)
+			net.WriteAngle(session.move.angles)
+		end
+	net.SendToServer()
+end
+
+local function sendWalkStateIfDue(session)
+	if RealTime() < (session.nextSend or 0) then return end
+
+	session.nextSend = RealTime() + WALK_SEND_INTERVAL
+	sendWalkState(session, true, true)
+end
+
 function Walk.Leave()
-	local wasWalking = Walk.session ~= nil
+	local session = Walk.session
 	Walk.session = nil
 	hook.Remove("CreateMove", MOVE_HOOK)
 	hook.Remove("HUDPaint", HUD_HOOK)
-	if wasWalking then surface.PlaySound(LEAVE_SOUND) end
+	if not session then return end
+
+	sendWalkState(session, false)
+	surface.PlaySound(LEAVE_SOUND)
+	playTeleportEffects(session, LocalPlayer())
 end
 
 function Walk.ReloadKeyName()
@@ -309,6 +358,8 @@ function Walk.Enter(ent)
 	hook.Add("CreateMove", MOVE_HOOK, createMove)
 	hook.Add("HUDPaint", HUD_HOOK, drawWalkHud)
 	surface.PlaySound(ENTER_SOUND)
+	playTeleportEffects(session, ply)
+	sendWalkState(session, true, false)
 	chat.AddText("[PocketMap] Walking: WASD, Space to jump, Ctrl to crouch. Your noclip key (default V) toggles flight. Press " .. Walk.ReloadKeyName() .. " to leave.")
 end
 
@@ -364,6 +415,7 @@ function createMove(cmd)
 			Walk.Leave()
 		else
 			updateFootstepsOnce(session)
+			sendWalkStateIfDue(session)
 		end
 	end
 	cmd:ClearMovement()

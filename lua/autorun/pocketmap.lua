@@ -40,11 +40,14 @@ local CLIENT_FILES = {
 	"pocketmap/cl_gamemove.lua",
 	"pocketmap/cl_footsteps.lua",
 	"pocketmap/cl_walk.lua",
+	"pocketmap/cl_walkers.lua",
 }
 
 if SERVER then
 	util.AddNetworkString( "PocketMap_Open" )
 	util.AddNetworkString( "PocketMap_Select" )
+	util.AddNetworkString( "PocketMap_Ply" )
+	util.AddNetworkString( "PocketMap_PlyRelay" )
 
 	for _, path in ipairs( CLIENT_FILES ) do AddCSLuaFile( path ) end
 end
