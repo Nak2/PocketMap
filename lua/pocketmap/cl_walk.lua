@@ -191,7 +191,9 @@ end
 function Walk.Leave()
 	local session = Walk.session
 	Walk.session = nil
+	if PocketMap.GamemodeMovement then PocketMap.GamemodeMovement.Reset() end
 	hook.Remove("CreateMove", MOVE_HOOK)
+	hook.Remove("SetupMove", MOVE_HOOK)
 	hook.Remove("HUDPaint", HUD_HOOK)
 	if not session then return end
 
@@ -328,7 +330,7 @@ local function randomClearSpawn(session)
 	end
 end
 
-local createMove
+local createMove, setupMove
 
 local function prepareCollisionThenEnter(ent, mini)
 	PocketMap.Physics.Prepare(mini, function()
@@ -355,7 +357,9 @@ function Walk.Enter(ent)
 	session.yawOffset = angles.y - ply:EyeAngles().y
 	session.enteredAt = RealTime()
 	Walk.session = session
+	session.command, session.inputs = 0, {}
 	hook.Add("CreateMove", MOVE_HOOK, createMove)
+	hook.Add("SetupMove", MOVE_HOOK, setupMove)
 	hook.Add("HUDPaint", HUD_HOOK, drawWalkHud)
 	surface.PlaySound(ENTER_SOUND)
 	playTeleportEffects(session, ply)
@@ -391,32 +395,48 @@ function createMove(cmd)
 	if not session then return end
 	local ply, mini = LocalPlayer(), session.mini
 	if not IsValid(ply) or not ply:Alive() or ply:InVehicle() or not IsValid(mini.ent) or mini.state ~= "ready" then Walk.Leave() return end
-	local mv = session.move
+	-- The engine has no current usercmd during CreateMove, so gamemode and addon
+	-- movement hooks cannot run here. Stash the input and run the virtual step
+	-- from the real SetupMove hook, where the engine's prediction has set it.
 	local number = cmd:CommandNumber()
-	if number > 0 and session.command ~= number then
-		session.command = number
-		mv.oldButtons = mv.buttons
-		mv.buttons, mv.forward, mv.side, mv.up = cmd:GetButtons(), cmd:GetForwardMove(), cmd:GetSideMove(), cmd:GetUpMove()
-		local angles = cmd:GetViewAngles()
-		mv.angles = Angle(angles.p, angles.y + session.yawOffset, 0)
-		mv.moveAngles = mv.angles
-		mv.maxSpeed, mv.maxClientSpeed = ply:GetRunSpeed(), ply:GetRunSpeed()
-		mv.speedModified = false
-		mv.impulse = cmd:GetImpulse()
-		local ok, err = PocketMap.GamemodeMovement.Step(ply, mv, cmd, session)
-		if not ok then
-			Walk.Leave()
-			ErrorNoHalt("[PocketMap] Gamemode movement callback failed: " .. tostring(err) .. "\n")
-			chat.AddText("[PocketMap] Walk mode ended because a gamemode movement callback failed; see the console.")
-		elseif isNoclippingOutsideBlock(session) then
-			Walk.Leave()
-		else
-			updateFootstepsOnce(session)
-			sendWalkStateIfDue(session)
-		end
+	if number > 0 and number > session.command and not session.inputs[number] then
+		session.inputs[number] = {
+			buttons = cmd:GetButtons(), forward = cmd:GetForwardMove(), side = cmd:GetSideMove(), up = cmd:GetUpMove(),
+			angles = cmd:GetViewAngles(), impulse = cmd:GetImpulse(),
+		}
 	end
 	cmd:ClearMovement()
 	cmd:ClearButtons()
+end
+
+-- Runs inside the engine's prediction of the real player, once per user command.
+function setupMove(ply, _, cmd)
+	local session = Walk.session
+	if not session or ply ~= LocalPlayer() or PocketMap.GamemodeMovement.active then return end
+	local number = cmd:CommandNumber()
+	local input = session.inputs[number]
+	if not input or number <= session.command then return end
+
+	session.command = number
+	for stashed in pairs(session.inputs) do
+		if stashed <= number then session.inputs[stashed] = nil end
+	end
+
+	local mv = session.move
+	mv.oldButtons = mv.buttons
+	mv.buttons, mv.forward, mv.side, mv.up = input.buttons, input.forward, input.side, input.up
+	mv.angles = Angle(input.angles.p, input.angles.y + session.yawOffset, 0)
+	mv.moveAngles = mv.angles
+	mv.maxSpeed, mv.maxClientSpeed = ply:GetRunSpeed(), ply:GetRunSpeed()
+	mv.speedModified = false
+	mv.impulse = input.impulse
+	PocketMap.GamemodeMovement.Step(ply, mv, cmd, session)
+	if isNoclippingOutsideBlock(session) then
+		Walk.Leave()
+	else
+		updateFootstepsOnce(session)
+		sendWalkStateIfDue(session)
+	end
 end
 
 function Walk.View(fov, zfar)

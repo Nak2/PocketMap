@@ -1,11 +1,41 @@
 -- Dispatch the active gamemode and addon movement callbacks, using the actual
 -- player and command with virtual movement data. No gamemode formulas are copied.
-PocketMap.GamemodeMovement = {}
+PocketMap.GamemodeMovement = PocketMap.GamemodeMovement or {}
 local Bridge = PocketMap.GamemodeMovement
+
+-- Player method wrappers are installed once and stay installed. They only
+-- divert calls for the walking player while Bridge.active is set, so no
+-- protected call is needed to restore them after an error.
+Bridge.originals = Bridge.originals or {}
+
+local function installWrapper(playerMeta, entityMeta, name)
+	if Bridge.originals[name] then return end
+	local original = playerMeta[name] or entityMeta[name]
+	if not original then return end
+	Bridge.originals[name] = { value = rawget(playerMeta, name) }
+	playerMeta[name] = function(target, ...)
+		local active = PocketMap.GamemodeMovement.active
+		local method = active and target == active.ply and active.virtual[name]
+		if method then return method(target, ...) end
+		return original(target, ...)
+	end
+end
+
+local VIRTUAL_NAMES = {
+	"OnGround", "IsOnGround", "Crouching", "GetFlags", "IsFlagSet", "GetPos",
+	"GetNetworkOrigin", "GetVelocity", "GetMoveType", "GetGroundEntity",
+	"WaterLevel", "WaterType", "EyeAngles", "GetAimVector", "EyePos",
+	"KeyDown", "KeyPressed", "KeyReleased",
+}
+
+function Bridge.Reset()
+	Bridge.active = nil
+end
 
 function Bridge.Step(ply, mv, cmd, session)
 	local playerMeta, entityMeta = FindMetaTable("Player"), FindMetaTable("Entity")
-	local saved = {}
+	for _, name in ipairs(VIRTUAL_NAMES) do installWrapper(playerMeta, entityMeta, name) end
+
 	local realFlags = ply:GetFlags()
 	local flagsMask = bit.bor(FL_ONGROUND, FL_DUCKING)
 	local viewAngles = cmd:GetViewAngles()
@@ -35,39 +65,22 @@ function Bridge.Step(ply, mv, cmd, session)
 		KeyPressed = function(_, key) return mv:KeyPressed(key) end,
 		KeyReleased = function(_, key) return mv:KeyReleased(key) end,
 	}
-	local ok, err = xpcall(function()
-		-- Auto-refresh can load this bridge while the old movement module is
-		-- still resident. Refresh the dependency before using the new API.
-		if not PocketMap.Movement or type(PocketMap.Movement.Prepare) ~= "function" then
-			include("pocketmap/movement.lua")
-		end
-		assert(PocketMap.Movement and type(PocketMap.Movement.Prepare) == "function", "PocketMap movement module is out of date; restart the game/server to load matching Lua files")
-		PocketMap.Movement.Prepare(ply, mv, session)
-		-- Scope player reads to the synchronous callback chain. Other players
-		-- keep their normal methods; every override is restored even on errors.
-		for name, callback in pairs(virtual) do
-			local original = playerMeta[name] or entityMeta[name]
-			if original then
-				saved[#saved + 1] = { name = name, value = rawget(playerMeta, name) }
-				local method = callback
-				playerMeta[name] = function(target, ...)
-					if target == ply then return method(target, ...) end
-					return original(target, ...)
-				end
-			end
-		end
-		cmd:SetViewAngles(mv:GetAngles())
-		hook.Run("SetupMove", ply, mv, cmd)
-		if not hook.Run("Move", ply, mv) then
-			session.moveSpeed = mv.speedModified and mv:GetMaxSpeed() or nil
-			PocketMap.Movement.Step(ply, mv, session)
-		end
-		hook.Run("FinishMove", ply, mv)
-	end, debug.traceback)
-	for i = #saved, 1, -1 do
-		local entry = saved[i]
-		playerMeta[entry.name] = entry.value
+
+	-- Auto-refresh can load this bridge while the old movement module is
+	-- still resident. Refresh the dependency before using the new API.
+	if not PocketMap.Movement or type(PocketMap.Movement.Prepare) ~= "function" then
+		include("pocketmap/movement.lua")
 	end
+	PocketMap.Movement.Prepare(ply, mv, session)
+
+	Bridge.active = { ply = ply, virtual = virtual }
+	cmd:SetViewAngles(mv:GetAngles())
+	hook.Run("SetupMove", ply, mv, cmd)
+	if not hook.Run("Move", ply, mv) then
+		session.moveSpeed = mv.speedModified and mv:GetMaxSpeed() or nil
+		PocketMap.Movement.Step(ply, mv, session)
+	end
+	hook.Run("FinishMove", ply, mv)
+	Bridge.active = nil
 	cmd:SetViewAngles(viewAngles)
-	return ok, err
 end
