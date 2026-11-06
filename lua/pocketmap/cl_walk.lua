@@ -330,7 +330,7 @@ local function randomClearSpawn(session)
 	end
 end
 
-local createMove, setupMove
+local createMove, setupMove, runStep
 
 local function prepareCollisionThenEnter(ent, mini)
 	PocketMap.Physics.Prepare(mini, function()
@@ -395,9 +395,7 @@ function createMove(cmd)
 	if not session then return end
 	local ply, mini = LocalPlayer(), session.mini
 	if not IsValid(ply) or not ply:Alive() or ply:InVehicle() or not IsValid(mini.ent) or mini.state ~= "ready" then Walk.Leave() return end
-	-- The engine has no current usercmd during CreateMove, so gamemode and addon
-	-- movement hooks cannot run here. Stash the input and run the virtual step
-	-- from the real SetupMove hook, where the engine's prediction has set it.
+
 	local number = cmd:CommandNumber()
 	if number > 0 and number > session.command and not session.inputs[number] then
 		session.inputs[number] = {
@@ -405,15 +403,14 @@ function createMove(cmd)
 			angles = cmd:GetViewAngles(), impulse = cmd:GetImpulse(),
 		}
 	end
+	-- Singleplayer has no client prediction: SetupMove never runs on the client,
+	if game.SinglePlayer() then runStep(ply, session, cmd, number) end
 	cmd:ClearMovement()
 	cmd:ClearButtons()
 end
 
--- Runs inside the engine's prediction of the real player, once per user command.
-function setupMove(ply, _, cmd)
-	local session = Walk.session
-	if not session or ply ~= LocalPlayer() or PocketMap.GamemodeMovement.active then return end
-	local number = cmd:CommandNumber()
+-- Applies the stashed input for one user command and runs the virtual step.
+function runStep(ply, session, cmd, number)
 	local input = session.inputs[number]
 	if not input or number <= session.command then return end
 
@@ -437,6 +434,12 @@ function setupMove(ply, _, cmd)
 		updateFootstepsOnce(session)
 		sendWalkStateIfDue(session)
 	end
+end
+
+function setupMove(ply, _, cmd)
+	local session = Walk.session
+	if not session or ply ~= LocalPlayer() or PocketMap.GamemodeMovement.active then return end
+	runStep(ply, session, cmd, cmd:CommandNumber())
 end
 
 function Walk.View(fov, zfar)
