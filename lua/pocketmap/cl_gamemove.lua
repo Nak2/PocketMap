@@ -75,12 +75,14 @@ function Bridge.Step(ply, mv, cmd, session)
 
 	Bridge.active = { ply = ply, virtual = virtual }
 	cmd:SetViewAngles(mv:GetAngles())
-	hook.Run("SetupMove", ply, mv, cmd)
+
+	local predicted = not game.SinglePlayer()
+	if predicted then hook.Run("SetupMove", ply, mv, cmd) end
 	if not hook.Run("Move", ply, mv) then
 		session.moveSpeed = mv.speedModified and mv:GetMaxSpeed() or nil
 		PocketMap.Movement.Step(ply, mv, session)
 	end
-	hook.Run("FinishMove", ply, mv)
+	if predicted then hook.Run("FinishMove", ply, mv) end
 	Bridge.active = nil
 	cmd:SetViewAngles(viewAngles)
 end
