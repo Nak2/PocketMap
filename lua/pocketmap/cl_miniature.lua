@@ -15,6 +15,7 @@ PocketMap = PocketMap or {}
 local BUDGET_SECONDS = 0.002
 local MIN_NEAR_PLANE = 0.25
 local STATUS_TITLE_HEIGHT = 12
+local ENTITY_REFRESH_SECONDS = 10
 
 local STATUS_ERROR = Color( 255, 120, 120 )
 local STATUS_TEXT = Color( 200, 200, 200 )
@@ -38,6 +39,7 @@ function PocketMap.NewMiniature( ent, mapName )
 	local mini = setmetatable( {
 		ent = ent,
 		mapName = mapName,
+		settings = PocketMap.Settings and PocketMap.Settings.Read( ent ) or nil,
 		title = mapName,
 		state = "loading", -- loading / ready / error / removed
 		status = "Starting",
@@ -89,24 +91,75 @@ local function destroyAll( objects )
 	for _, object in ipairs( objects ) do object:Destroy() end
 end
 
+function Mini:BeginEntityRefresh()
+	if self.state == "removed" or self.entityRefresh then return end
+	self.entityRefresh = { ent = self.ent, creation = self.ent:GetCreationID(),
+		frame = FrameNumber(), expires = RealTime() + ENTITY_REFRESH_SECONDS }
+	local session = PocketMap.Walk and PocketMap.Walk.session
+	if session and session.mini == self then session.inputs = {} end
+end
+
+function Mini:UpdateEntityRefresh()
+	local refresh = self.entityRefresh
+	if not refresh then return end
+	-- OnRemove can run while the old entity is still valid. Do not mistake
+	-- that for its reappearance before the full update has finished this frame.
+	if FrameNumber() <= refresh.frame then return end
+	local ent = refresh.ent
+	if IsValid( ent ) and not ent:IsDormant() then
+		if self.ent ~= ent or ent:GetCreationID() ~= refresh.creation then
+			self:Destroy()
+			return
+		end
+		local name = ent:GetMapName()
+		if name == self.mapName then
+			ent.Miniature, ent.LoadedMap = self, self.mapName
+			self.entityRefresh, self.matrixFrame = nil, nil
+			return
+		elseif name ~= "" then
+			self:Destroy()
+			return
+		end
+		-- Networked strings can briefly be empty during recreation. A genuine
+		-- clear or a block which never returns still expires below.
+	end
+	if RealTime() >= refresh.expires then self:Destroy() end
+end
+
 function Mini:Destroy()
+	if self.state == "removed" then return end
 	active[self] = nil
 	self.state = "removed"
+	self.entityRefresh = nil
 	if PocketMap.Walk and PocketMap.Walk.session and PocketMap.Walk.session.mini == self then
 		PocketMap.Walk.Leave()
 	end
+	if IsValid( self.ent ) and self.ent.Miniature == self then
+		self.ent.Miniature, self.ent.LoadedMap, self.ent.LimitHit = nil, nil, false
+	end
 
 	destroyAll( self.objects )
+	if PocketMap.Decals then PocketMap.Decals.Destroy( self ) end
+	if PocketMap.Flashlight then PocketMap.Flashlight.FreeWorldShadows( self ) end
+	if PocketMap.WorldCache then PocketMap.WorldCache.Destroy( self ) end
+	self.worldFaceGroups, self.worldFaceClusters, self.worldLightUV = nil, nil, nil
+	PocketMap.MapIO.Destroy( self )
 	destroyAll( self.skyObjects )
 	destroyAll( self.detailMeshes )
 	PocketMap.Water.Free( self )
+	PocketMap.Sky.Free( self )
 	PocketMap.Props.Destroy( self )
+	PocketMap.Effects.Destroy( self )
 	PocketMap.RT.Release( self.atlasTarget )
 	PocketMap.RT.Release( self.atlasLayerTarget )
 
-	-- the props of the sky room share their meshes with the group of the map
+	-- Sky and world groups can share a skin's meshes, or own a sky-only set.
+	local destroyed = {}
 	for _, group in ipairs( self.propGroups ) do
-		if not group.sky then PocketMap.PropMesh.Destroy( group.meshes ) end
+		if group.meshes and not destroyed[group.meshes] then
+			destroyed[group.meshes] = true
+			PocketMap.PropMesh.Destroy( group.meshes )
+		end
 	end
 
 	self.objects, self.skyObjects, self.detailMeshes, self.propGroups, self.bsp = {}, {}, {}, {}, nil
@@ -120,15 +173,24 @@ end
 ---once a frame (opaque and translucent pass, mirrors, cameras), and it doesn't move between them.
 function Mini:UpdateMatrix()
 	local frame = FrameNumber()
-	if self.matrixFrame == frame then return end
+	if self.matrixFrame == frame then return self.transformRevision end
 	self.matrixFrame = frame
+	local pos, angles = self.ent:GetPos(), self.ent:GetAngles()
+	local old = self.transformPose
+	if old and old.x == pos.x and old.y == pos.y and old.z == pos.z
+		and old.p == angles.p and old.yaw == angles.y and old.r == angles.r and old.scale == self.scale
+		and old.center == self.boxCenter and old.mapCenter == self.mapCenter then return self.transformRevision end
+	self.transformPose = { x = pos.x, y = pos.y, z = pos.z, p = angles.p, yaw = angles.y, r = angles.r,
+		scale = self.scale, center = self.boxCenter, mapCenter = self.mapCenter }
+	self.transformRevision = ( self.transformRevision or 0 ) + 1
 
 	local matrix = self.matrix
 	matrix:Identity()
 	matrix:Translate( self.ent:LocalToWorld( self.boxCenter ) )
-	matrix:Rotate( self.ent:GetAngles() )
+	matrix:Rotate( angles )
 	matrix:Scale( self.scaleVec )
 	matrix:Translate( self.negCenter )
+	return self.transformRevision
 end
 
 function Mini:BlockPosition( mapPosition )
@@ -137,7 +199,8 @@ end
 
 ---The origin of the view being rendered decides, not the player: a camera outside the block is outside.
 function Mini:EyeInside()
-	return not self.ent:IsOutsideBox( EyePos() )
+	local view = PocketMap.Scene and PocketMap.Scene.View( self )
+	return not self.ent:IsOutsideBox( view and view.origin or EyePos() )
 end
 
 -- Loading status ------------------------------------------------------------------------------------------------------
@@ -237,7 +300,10 @@ PocketMap.Hooks.Register( "Think", "PocketMap_Load", function()
 
 	local perBlock = BUDGET_SECONDS / count
 	for mini in pairs( active ) do
-		if IsValid( mini.ent ) then
+		mini:UpdateEntityRefresh()
+		if mini.entityRefresh or mini.state == "removed" then
+			-- Retain resources while the original network entity is rebuilding.
+		elseif IsValid( mini.ent ) then
 			PocketMap.Loader.Step( mini, SysTime() + perBlock )
 		else
 			mini:Destroy()

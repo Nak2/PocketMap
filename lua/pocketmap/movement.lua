@@ -23,6 +23,7 @@ do
     local BTN_MOVELEFT                      = IN_MOVELEFT or 512
     local BTN_MOVERIGHT                     = IN_MOVERIGHT or 1024
     local BTN_SPEED                         = IN_SPEED or 131072
+    local BTN_WALK                          = IN_WALK or 262144
 
     local MT_WALK                           = MOVETYPE_WALK or 2
     local MT_LADDER                         = MOVETYPE_LADDER or 9
@@ -65,8 +66,7 @@ do
     local OVERBOUNCE                        = 1.0
     local VELOCITY_EPSILON                  = 0.0001
 
-    local STEP_HEIGHT                       = 18
-    local STEP_DOWN                         = 18
+    local STEP_HEIGHT_FALLBACK              = 18
     local GROUND_NORMAL                     = 0.70
     local GROUND_SNAP                       = 2
     local SURFACE_EPSILON                   = 0.03125
@@ -76,8 +76,6 @@ do
     local LADDER_CHECK_DIST                 = 4
     local LADDER_SPEED                      = 200
     local LADDER_DISMOUNT                   = 270
-
-    local AUTO_BHOP                         = true
 
     local STAND_MINS                        = Vector(-16, -16, 0)
     local STAND_MAXS                        = Vector(16, 16, 72)
@@ -113,6 +111,7 @@ do
     local cvMaxVelocity                     = GetConVar and GetConVar("sv_maxvelocity")
     local cvNoclipSpeed                     = GetConVar and GetConVar("sv_noclipspeed")
     local cvNoclipAccelerate                = GetConVar and GetConVar("sv_noclipaccelerate")
+    local cvAutoBhop                        = GetConVar and GetConVar("sv_autobunnyhopping")
 
     local function cvar_float(cv, fallback)
         if cv and cv.GetFloat then
@@ -122,12 +121,22 @@ do
         return fallback
     end
 
-    local function hull_for_duck(ducking)
+    function PocketMap.Movement.PlayerHull(ply, ducking)
         if ducking then
+            if ply.GetHullDuck then return ply:GetHullDuck() end
             return DUCK_MINS, DUCK_MAXS
         end
-
+        if ply.GetHull then return ply:GetHull() end
         return STAND_MINS, STAND_MAXS
+    end
+
+    local function player_step_size(ply)
+        local height = ply.GetStepSize and ply:GetStepSize()
+        return height and height > 0 and height or STEP_HEIGHT_FALLBACK
+    end
+
+    local function auto_bhop()
+        return cvAutoBhop ~= nil and cvAutoBhop:GetBool()
     end
 
     local function fake_nohit_trace(out, ex, ey, ez)
@@ -275,6 +284,7 @@ do
         st.engineGroundEnt = ent
         if context then
             context.onground, context.groundEnt = grounded, ent
+            context.groundRecord = grounded and tr_entity(tr) or nil
         end
 
         -- Do not cache-skip this call. The engine/default movement can clear or mutate the
@@ -533,6 +543,14 @@ do
         return SPRINT_SPEED_FALLBACK
     end
 
+    local function player_slow_walk_speed(ply)
+        if ply.GetSlowWalkSpeed then
+            local speed = ply:GetSlowWalkSpeed()
+            if speed and speed > 0 then return speed end
+        end
+        return player_walk_speed(ply)
+    end
+
     local function player_jump_power(ply)
         if ply.GetJumpPower then
             local jumpPower = ply:GetJumpPower()
@@ -759,7 +777,7 @@ do
         return ox, oy, oz, vx, vy, vz, hitGround, surfaceFriction, lastTrace
     end
 
-    local function step_slide_move(ply, ox, oy, oz, vx, vy, vz, dt, mins, maxs, st)
+    local function step_slide_move(ply, ox, oy, oz, vx, vy, vz, dt, mins, maxs, st, stepHeight)
         local startX, startY, startZ = ox, oy, oz
         local startVx, startVy, startVz = vx, vy, vz
 
@@ -769,7 +787,7 @@ do
         local upTr = trace_hull(
             ply,
             startX, startY, startZ,
-            startX, startY, startZ + STEP_HEIGHT,
+            startX, startY, startZ + stepHeight,
             mins, maxs,
             MASK_PLAYERSOLID_L,
             st.traceStepUp
@@ -779,7 +797,7 @@ do
             return downOx, downOy, downOz, downVx, downVy, downVz, downGround, downFriction, downTrace
         end
 
-        local upX, upY, upZ = startX, startY, startZ + STEP_HEIGHT
+        local upX, upY, upZ = startX, startY, startZ + stepHeight
 
         local stepOx, stepOy, stepOz, stepVx, stepVy, stepVz =
             slide_move(ply, upX, upY, upZ, startVx, startVy, startVz, dt, mins, maxs, st.traceStepMove, false)
@@ -787,7 +805,7 @@ do
         local downTr = trace_hull(
             ply,
             stepOx, stepOy, stepOz,
-            stepOx, stepOy, stepOz - STEP_HEIGHT - STEP_DOWN - SURFACE_EPSILON,
+            stepOx, stepOy, stepOz - stepHeight * 2 - SURFACE_EPSILON,
             mins, maxs,
             MASK_PLAYERSOLID_L,
             st.traceStepDown
@@ -1091,14 +1109,15 @@ do
     function PocketMap.Movement.Prepare(ply, mv, session)
         context = session
         local st = states[session]
-        session.ducking = band(mv:GetButtons(), BTN_DUCK) ~= 0 or (st and st.ducking) or false
+        -- Use the completed collision state during the view transition.
+        session.ducking = session.crouchFlag == true or (st and st.ducking) or false
         session.onground = false
         session.onladder = st ~= nil and st.onladder == true
         local pos, vel = mv:GetOrigin(), mv:GetVelocity()
-        local mins, maxs = hull_for_duck(session.ducking)
+        local mins, maxs = PocketMap.Movement.PlayerHull(ply, session.ducking)
         session.waterLevel, session.waterType = cheap_water_level(ply, pos.x, pos.y, pos.z, mins, maxs)
         if not session.noclip and vel.z <= NON_JUMP_VELOCITY then
-            local dist = st and st.onground and vel.z <= 0 and STEP_DOWN or GROUND_SNAP
+            local dist = st and st.onground and vel.z <= 0 and player_step_size(ply) or GROUND_SNAP
             session.onground = probe_ground(ply, pos.x, pos.y, pos.z, mins, maxs, dist, {})
         end
     end
@@ -1199,39 +1218,41 @@ do
         local bvx, bvy, bvz = get_base_velocity(ply)
 
         local wantDuck = band(buttons, BTN_DUCK) ~= 0
-        local engineCrouching = false
-        local ducking = wantDuck or engineCrouching or st.ducking
-
-        if st.ducking and not wantDuck and not engineCrouching then
+        local standBlocked = false
+        if not wantDuck and (st.ducking or session.duckTarget) then
+            local standMins, standMaxs = PocketMap.Movement.PlayerHull(ply, false)
             local standTr = trace_hull(
                 ply,
                 ox, oy, oz,
                 ox, oy, oz,
-                STAND_MINS,
-                STAND_MAXS,
+                standMins,
+                standMaxs,
                 MASK_PLAYERSOLID_L,
                 st.traceDuck
             )
 
-            ducking = tr_startsolid(standTr) or tr_allsolid(standTr) or tr_hit(standTr)
+            standBlocked = tr_startsolid(standTr) or tr_allsolid(standTr) or tr_hit(standTr)
         end
 
+        session.duckTarget = wantDuck or standBlocked
+        if CLIENT and PocketMap.Walk and PocketMap.Walk.EyeOffset then
+            PocketMap.Walk.EyeOffset(session)
+        end
+        local ducking = session.crouchFlag == true or standBlocked
         st.ducking = ducking
         session.ducking = ducking
-        local mins, maxs = hull_for_duck(ducking)
+        local mins, maxs = PocketMap.Movement.PlayerHull(ply, ducking)
+        local stepHeight = player_step_size(ply)
 
         local sprinting = band(buttons, BTN_SPEED) ~= 0 and not ducking and fmove > 0
-        local maxSpeed = session.moveSpeed or (sprinting and player_run_speed(ply) or player_walk_speed(ply))
+        local walking = band(buttons, BTN_WALK) ~= 0 and (not ply.GetCanWalk or ply:GetCanWalk())
+        local maxSpeed = session.moveSpeed or (sprinting and player_run_speed(ply) or walking and player_slow_walk_speed(ply) or player_walk_speed(ply))
 
         if ply.GetPlayerMaxSpeed and not session.moveSpeed then
             local playerMaxSpeed = ply:GetPlayerMaxSpeed()
             if playerMaxSpeed and playerMaxSpeed > 0 then
-                maxSpeed = playerMaxSpeed
+                maxSpeed = min(maxSpeed, playerMaxSpeed)
             end
-        end
-
-        if ducking then
-            maxSpeed = maxSpeed * player_duck_speed_multiplier(ply)
         end
 
         local engineMax = mv:GetMaxSpeed()
@@ -1343,7 +1364,7 @@ do
             -- Otherwise walking/friction can feel grounded while the jump gate saw airborne.
             local preJumpGroundDist = GROUND_SNAP
             if waterLevel == 0 and wasGround and vz <= 0 then
-                preJumpGroundDist = STEP_DOWN
+                preJumpGroundDist = stepHeight
             end
 
             local g, gx, gy, gz, gf, gtr = probe_ground(ply, ox, oy, oz, mins, maxs, preJumpGroundDist, st.traceGround)
@@ -1371,14 +1392,19 @@ do
         end
 
         local jumpHeld = band(buttons, BTN_JUMP) ~= 0
-        local wantsJump = jumpHeld and (AUTO_BHOP or not st.wasJump)
+        local autoBhop = auto_bhop()
+        local wantsJump = jumpHeld and (autoBhop or not st.wasJump)
         st.wasJump = jumpHeld
 
         local jumped = false
+        local startedGrounded = onground
         if onground and wantsJump then
             clear_ground_truth(ply, st)
 
-            vz = player_jump_power(ply)
+            -- Native Source movement consumes half of the first gravity tick
+            -- when jumping. Without it, identical GetJumpPower values produce
+            -- a jump apex about 1.5 units higher at 600 gravity / 66 ticks.
+            vz = player_jump_power(ply) - cvar_float(cvGravity, GRAVITY_FALLBACK) * entity_gravity(ply) * dt * 0.5
             onground = false
             groundTrace = nil
             jumped = true
@@ -1387,15 +1413,30 @@ do
         end
 
         local wishx, wishy, wishSpeed = yaw_wish(mv:GetAngles(), fmove, smove)
+        if ducking and startedGrounded then
+            -- Input can exceed the player's configured speed. Ducking caps
+            -- movement relative to maxSpeed, not the raw forward command.
+            maxSpeed = maxSpeed * player_duck_speed_multiplier(ply)
+        end
         if wishSpeed > maxSpeed then
             wishSpeed = maxSpeed
+        end
+
+        if session.debugMotion then
+            local debug = session.debugMotion
+            debug.crouching = ducking
+            debug.preGround = startedGrounded
+            debug.oldGround = wasGround
+            debug.wishSpeed = wishSpeed
+            debug.maxSpeed = maxSpeed
+            debug.duckMultiplier = player_duck_speed_multiplier(ply)
         end
 
         if onground and not jumped then
             if vz < 0 then vz = 0 end
 
             local waterScale = waterLevel > 0 and WATER_FRICTION_MUL or 1
-            local skipFriction = AUTO_BHOP and jumpHeld and justLandedPreMove
+            local skipFriction = autoBhop and jumpHeld and justLandedPreMove
 
             if not skipFriction then
                 vx, vy = apply_ground_friction(vx, vy, dt, surfaceFriction, waterScale)
@@ -1420,7 +1461,7 @@ do
 
             if moveVx ~= 0 or moveVy ~= 0 or moveVz ~= 0 then
                 ox, oy, oz, moveVx, moveVy, moveVz, onground, surfaceFriction, groundTrace =
-                    step_slide_move(ply, ox, oy, oz, moveVx, moveVy, moveVz, dt, mins, maxs, st)
+                    step_slide_move(ply, ox, oy, oz, moveVx, moveVy, moveVz, dt, mins, maxs, st, stepHeight)
 
                 vx = moveVx - bvx
                 vy = moveVy - bvy
@@ -1469,7 +1510,7 @@ do
         end
 
         if not jumped and waterLevel == 0 and vz <= 0 and (onground or st.onground) then
-            local snapDist = st.onground and (STEP_HEIGHT + STEP_DOWN) or STEP_DOWN
+            local snapDist = st.onground and stepHeight * 2 or stepHeight
             local g, gx, gy, gz, gf, snapTrace = probe_ground(ply, ox, oy, oz, mins, maxs, snapDist, st.traceSnap)
 
             if g then

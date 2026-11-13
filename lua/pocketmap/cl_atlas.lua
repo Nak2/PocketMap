@@ -26,7 +26,7 @@ local function acquireLayerTarget( mini, atlas )
 	local width, height = atlas:GetLayerSize()
 	if not width then return nil end
 
-	mini.atlasLayerTarget = PocketMap.RT.Acquire( width, height )
+	mini.atlasLayerTarget = PocketMap.RT.Acquire( width, height, { float = mini.atlasFormat == "IMAGE_FORMAT_RGBA16161616F" } )
 	return mini.atlasLayerTarget
 end
 
@@ -40,6 +40,7 @@ local function planAtlas( mini, faces, hdr, lightToggle )
 
 	return mini.bsp:CreateLightmapAtlas( {
 		hdr = hdr,
+		desaturate = 0,
 		lightToggle = weights,
 		animatedStyles = lightToggle and styles.animated or nil,
 		progress = reportProgress( mini ),
@@ -68,7 +69,8 @@ function Atlas.Build( mini, faces, hdr, lightToggle )
 		return nil
 	end
 
-	atlas:Write( rt, acquireLayerTarget( mini, atlas ) or false )
+	local nativeLDR = not render.GetHDREnabled() and mini.atlasFormat == "IMAGE_FORMAT_RGBA16161616F"
+	atlas:Write( rt, acquireLayerTarget( mini, atlas ) or false, nativeLDR )
 
 	if atlas:IsAnimated() then mini.atlasObject = atlas end
 	mini.atlasSize = width .. "x" .. height .. " (x" .. smoothing .. ")"

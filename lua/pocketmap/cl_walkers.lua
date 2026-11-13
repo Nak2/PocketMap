@@ -114,6 +114,8 @@ local function drawWalker( walker, now )
 	local block = walker.block
 	local mini = block.Miniature
 	if not mini or mini.state ~= "ready" then return end
+	if PocketMap.Settings and PocketMap.Settings.MinimalPreview( mini ) then return end
+	if PocketMap.Settings and not PocketMap.Settings.Enabled( mini, "walkers" ) then return end
 
 	local ply = playerOf( walker )
 	local model = modelOf( walker, ply )

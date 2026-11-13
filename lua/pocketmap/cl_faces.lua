@@ -182,16 +182,25 @@ end
 local function splitDrawable( mini, bsp, skyRoom )
 	local windowBrushes = areaportalWindowBrushes( bsp )
 	local world, sky, seen = {}, {}, 0
+	mini.mapIO.dynamicFaces = {}
 
 	for _, face in pairs( bsp:GetFaces() ) do
 		if isDrawable( face ) then
-			if face:IsWorld() and isInSkyRoom( bsp, skyRoom, face ) then
-				sky[#sky + 1] = face
-			elseif face:IsWorld() then
-				world[#world + 1] = face
-			elseif brushEntityShown( face, windowBrushes ) then
-				world[#world + 1] = face
-				mini.brushFaces = mini.brushFaces + 1
+			local dynamic = mini.mapIO.dynamicModels[face:GetBModel()]
+			if dynamic and not isInvisible( dynamic.entity ) then
+				mini.mapIO.dynamicFaces[dynamic] = mini.mapIO.dynamicFaces[dynamic] or {}
+				table.insert( mini.mapIO.dynamicFaces[dynamic], face )
+			elseif dynamic then
+				-- An invisible brush must not appear in the static world either.
+			else
+				if face:IsWorld() and isInSkyRoom( bsp, skyRoom, face ) then
+					sky[#sky + 1] = face
+				elseif face:IsWorld() then
+					world[#world + 1] = face
+				elseif brushEntityShown( face, windowBrushes ) then
+					world[#world + 1] = face
+					mini.brushFaces = mini.brushFaces + 1
+				end
 			end
 		end
 
@@ -254,5 +263,14 @@ function Faces.Sort( mini, job )
 
 	job.slicesTotal = math.max( countSlices( job.groups, job.order ) + countSlices( job.skyGroups, job.skyOrder ), 1 )
 	job.materialOrder = uniqueMaterials( job.order, job.skyOrder )
+	job.dynamicFaces = mini.mapIO.dynamicFaces
+	local known = {}
+	for _, name in ipairs( job.materialOrder ) do known[name] = true end
+	for _, faces in pairs( job.dynamicFaces ) do
+		for _, face in ipairs( faces ) do
+			local name = face:GetTexture() or "?"
+			if not known[name] then job.materialOrder[#job.materialOrder + 1], known[name] = name, true end
+		end
+	end
 	coroutine.yield()
 end

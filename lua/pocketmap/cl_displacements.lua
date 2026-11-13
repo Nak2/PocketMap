@@ -52,6 +52,7 @@ function Disp.IsPassableToHulls(info)
 end
 
 function Disp.Build(mini, job, yield)
+	if PocketMap.Settings and not PocketMap.Settings.Enabled( mini, "displacement_collision" ) then return end
 	local count = 0
 	mini:SetStatus("Building displacement collision", 0.05)
 	-- Do not infer collision-brush removal from side.dispinfo: VBSP can leave

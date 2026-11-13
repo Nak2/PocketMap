@@ -1,7 +1,8 @@
--- Mount the selected BSP's embedded materials before the engine first loads them.
+-- Mount the selected BSP's embedded render assets before the engine loads them.
 PocketMap.Pak = {}
 local Pak = PocketMap.Pak
 local mounted = {}
+Pak.manifests = {}
 
 local function uint(s, pos, bytes)
 	assert(pos >= 1 and pos + bytes - 1 <= #s, "Truncated BSP ZIP")
@@ -134,14 +135,24 @@ end
 local MAX_ENTRY_BYTES = 134217728
 local MAX_TOTAL_BYTES = 268435456
 local MAX_ENTRIES = 8192
+-- Bump when the asset selection changes: mounted GMAs stay cached by filename.
+local ASSET_FORMAT_VERSION = 4
 
-local function isNewSafeMaterialPath(name)
-	return name:match("^materials/") ~= nil
-		and (name:match("%.vmt$") ~= nil or name:match("%.vtf$") ~= nil)
-		and not name:find("..", 1, true)
-		and not name:find(":", 1, true)
-		and not name:find("%c")
-		and not file.Exists(name, "GAME")
+local function isNewSafeAssetPath( name )
+	if name:find( "..", 1, true ) or name:find( ":", 1, true ) or name:find( "%c" ) then return false end
+	if file.Exists( name, "GAME" ) then return false end
+
+	if name:match( "^materials/" ) then
+		return name:match( "%.vmt$" ) ~= nil or name:match( "%.vtf$" ) ~= nil
+	end
+	if name:match( "^models/" ) then
+		return name:match( "%.mdl$" ) ~= nil or name:match( "%.vvd$" ) ~= nil
+			or name:match( "%.vtx$" ) ~= nil or name:match( "%.phy$" ) ~= nil
+			or name:match( "%.ani$" ) ~= nil
+	end
+	if name:match( "^particles/.*%.pcf$" ) then return true end
+	if name:match( "^maps/[^/]+_particles%.txt$" ) then return true end
+	return false
 end
 
 function Pak.Read(zip, yield)
@@ -162,11 +173,11 @@ function Pak.Read(zip, yield)
 		local nameLength, extra, comment = uint(zip, pos + 28, 2), uint(zip, pos + 30, 2), uint(zip, pos + 32, 2)
 		local offset = uint(zip, pos + 42, 4) + 1
 		local name = zip:sub(pos + 46, pos + 45 + nameLength):lower():gsub("\\", "/")
-		if isNewSafeMaterialPath(name) then
-			assert(flags % 2 == 0, "Encrypted BSP material")
-			assert(size <= MAX_ENTRY_BYTES, "BSP texture is too large")
+		if isNewSafeAssetPath( name ) then
+			assert( flags % 2 == 0, "Encrypted BSP asset" )
+			assert( size <= MAX_ENTRY_BYTES, "BSP asset is too large" )
 			totalBytes = totalBytes + size
-			assert(totalBytes <= MAX_TOTAL_BYTES and #entries < MAX_ENTRIES, "The packed materials of the BSP are too large")
+			assert( totalBytes <= MAX_TOTAL_BYTES and #entries < MAX_ENTRIES, "The packed assets of the BSP are too large" )
 			assert(zip:sub(offset, offset + 3) == "PK\3\4", "Invalid ZIP local header")
 			local first = offset + 30 + uint(zip, offset + 26, 2) + uint(zip, offset + 28, 2)
 			assert(first + packed - 1 <= #zip, "Truncated packed material")
@@ -179,9 +190,9 @@ function Pak.Read(zip, yield)
 				local properties = uint(data, 3, 2)
 				assert(properties == 5 and #data >= 9, "Invalid ZIP-LZMA properties")
 				data = util.Decompress(data:sub(5, 9) .. le32(size) .. le32(0) .. data:sub(10), size)
-				assert(data, "Could not decompress ZIP-LZMA material")
+				assert( data, "Could not decompress ZIP-LZMA asset" )
 			else assert(method == 0, "Unsupported ZIP compression method " .. method) end
-			assert(#data == size and tonumber(util.CRC(data)) == crc, "BSP material checksum mismatch")
+			assert( #data == size and tonumber( util.CRC( data ) ) == crc, "BSP asset checksum mismatch" )
 			entries[#entries + 1] = { name = name, data = data, crc = crc }
 		end
 		pos = pos + 46 + nameLength + extra + comment
@@ -196,8 +207,19 @@ function Pak.Mount(bsp, yield)
 	local key = util.CRC(zip) .. "_" .. #zip
 	if mounted[key] then return mounted[key] end
 	local entries = Pak.Read(zip, yield)
+	-- GMA's whitelist rejects maps/*_particles.txt and rejects the whole
+	-- archive with it. Keep those manifests for our loader without mounting them.
+	local assets = {}
+	for _, entry in ipairs( entries ) do
+		if entry.name:match( "^maps/[^/]+_particles%.txt$" ) then
+			Pak.manifests[entry.name] = entry.data
+		else
+			assets[#assets + 1] = entry
+		end
+	end
+	entries = assets
 	if #entries == 0 then return 0 end
-	local header = { "GMAD", string.char(3), string.rep("\0", 16), "\0PocketMap materials\0{}\0PocketMap\0", le32(1) }
+	local header = { "GMAD", string.char( 3 ), string.rep( "\0", 16 ), "\0PocketMap packed assets\0{}\0PocketMap\0", le32( 1 ) }
 	for i, entry in ipairs(entries) do
 		header[#header + 1] = le32(i) .. entry.name .. "\0" .. le32(#entry.data) .. le32(0) .. le32(entry.crc)
 	end
@@ -206,9 +228,9 @@ function Pak.Mount(bsp, yield)
 	local data = table.concat(header)
 	data = data .. le32(tonumber(util.CRC(data)))
 	file.CreateDir("pocketmap/pak")
-	local path = "pocketmap/pak/" .. key .. ".gma.dat"
+	local path = "pocketmap/pak/" .. key .. "_v" .. ASSET_FORMAT_VERSION .. ".gma.dat"
 	file.Write(path, data)
-	assert(game.MountGMA("data/" .. path), "Could not mount the BSP's packed materials")
+	assert( game.MountGMA( "data/" .. path ), "Could not mount the BSP's packed assets" )
 	mounted[key] = #entries
 	return #entries
 end

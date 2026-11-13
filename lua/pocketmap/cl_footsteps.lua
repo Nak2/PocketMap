@@ -167,6 +167,7 @@ local function playMovementStep( session, state, ground, onGround, ducking, wate
 end
 
 function Footsteps.Update( session, dt )
+	if PocketMap.Settings and not PocketMap.Settings.Enabled( session.mini, "footsteps" ) then return end
 	local state = session.steps
 	if not state then
 		state = newState()

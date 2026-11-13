@@ -12,6 +12,7 @@ local MAX_VERTICES = 30000
 local CUTOUT_REFERENCE = 0.5
 local MATERIAL_VAR_NOCULL = 0x2000
 local MATERIAL_VAR_ADDITIVE = 0x80
+local MATERIAL_VAR_TRANSLUCENT = 0x200000
 local STUDIOHDR_FLAGS_OFFSET = 152
 local STUDIOHDR_FLAGS_STATIC_PROP = 0x10
 
@@ -50,11 +51,9 @@ local function cutoutCopy( material )
 	if not texture then return material end
 
 	local id = ( material:GetName():lower() .. "_" .. CUTOUT_REFERENCE ):gsub( "[^%w]", "_" )
-	local shader = material:GetShader():gsub( "_DX%d+$", "" )
-	return CreateMaterial( "PocketMap_PropCutout_" .. id, shader, {
-		["$basetexture"] = texture:GetName(),
-		["$model"] = 1,
-		["$vertexcolor"] = 1,
+	return PocketMap.Materials.Copy( material, "PocketMap_PropCutout_v2_" .. id, {
+		["$flags"] = bit.band( flags, bit.bnot( MATERIAL_VAR_TRANSLUCENT ) ),
+		["$translucent"] = 0,
 		["$alphatest"] = 1,
 		["$alphatestreference"] = CUTOUT_REFERENCE,
 		["$allowalphatocoverage"] = 1,
@@ -63,9 +62,9 @@ local function cutoutCopy( material )
 end
 
 ---The finest level of detail isn't needed: the first of these that the model has.
-local function readTriangles( path )
+local function readTriangles( path, skin )
 	for _, lod in ipairs( LODS ) do
-		local data = util.GetModelMeshes( path, lod )
+		local data = util.GetModelMeshes( path, lod, 0, skin or 0 )
 		if data and #data > 0 then return data end
 	end
 end
@@ -74,10 +73,24 @@ local function buildMesh( material, triangles, first, last )
 	local meshObject = Mesh( material )
 
 	mesh.Begin( meshObject, MATERIAL_TRIANGLES, ( last - first + 1 ) / 3 )
+	local tangent, binormal
 	for i = first, last do
 		local vertex = triangles[i]
+		if ( i - first ) % 3 == 0 then
+			local b, c = triangles[i + 1], triangles[i + 2]
+			local ab, ac = b.pos - vertex.pos, c.pos - vertex.pos
+			local bu, bv, cu, cv = b.u - vertex.u, b.v - vertex.v, c.u - vertex.u, c.v - vertex.v
+			local determinant = bu * cv - cu * bv
+			if math.abs( determinant ) > 0.00000001 then
+				tangent = ( ( ab * cv - ac * bv ) / determinant ):GetNormalized()
+				binormal = ( ( ac * bu - ab * cu ) / determinant ):GetNormalized()
+			else
+				tangent, binormal = nil, nil
+			end
+		end
 		mesh.Position( vertex.pos )
 		mesh.Normal( vertex.normal )
+		if tangent and binormal then mesh.TangentS( tangent ) mesh.TangentT( binormal ) end
 		mesh.TexCoord( 0, vertex.u, vertex.v )
 		mesh.Color( 255, 255, 255, 255 )
 		mesh.AdvanceVertex()
@@ -101,8 +114,8 @@ end
 
 ---@param path string
 ---@return table? parts # nil if the model has no mesh data
-function PropMesh.Build( path )
-	local data = readTriangles( path )
+function PropMesh.Build( path, skin )
+	local data = readTriangles( path, skin )
 	if not data then return nil end
 
 	local parts = {}

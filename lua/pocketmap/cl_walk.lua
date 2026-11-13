@@ -2,15 +2,62 @@
 -- Replace any always-installed hooks left by the previous walk implementation.
 hook.Remove("CreateMove", "PocketMap_Walk")
 hook.Remove("PlayerBindPress", "PocketMap_Noclip")
-PocketMap.Walk = {}
+PocketMap.Walk = PocketMap.Walk or {}
 local Walk = PocketMap.Walk
 local Session = {}
 Session.__index = Session
+
+-- Animate the view independently from movement ticks, using the movement
+-- settings on the player. This also handles changing direction mid-duck.
+function Walk.EyeOffset(session)
+	local ply = LocalPlayer()
+	local standing = ply:GetViewOffset()
+	local ducked = ply:GetViewOffsetDucked()
+	-- The view transition leads the collision-hull switch. Source retains
+	-- the old hull until the duck/unduck animation completes.
+	local target = not session.noclip and session.duckTarget and ducked or standing
+	local now = RealTime()
+	local current = session.viewOffset
+	if not current then
+		current = Vector(standing.x, standing.y, standing.z)
+		session.viewOffset = current
+	end
+
+	local function progress()
+		local duration = session.viewDuration or 0
+		local fraction = duration > 0 and math.Clamp((now - session.viewStarted) / duration, 0, 1) or 1
+		return fraction * fraction * (3 - 2 * fraction)
+	end
+
+	if session.viewTarget then
+		local fraction = progress()
+		current.x = Lerp(fraction, session.viewFrom.x, session.viewTarget.x)
+		current.y = Lerp(fraction, session.viewFrom.y, session.viewTarget.y)
+		current.z = Lerp(fraction, session.viewFrom.z, session.viewTarget.z)
+		if fraction >= 1 then
+			-- Source's duck flag becomes visible only after the transition ends.
+			session.crouchFlag = session.viewTarget:DistToSqr(ducked) < 0.001
+		end
+	end
+
+	if not session.viewTarget or session.viewTarget:DistToSqr(target) > 0.000001 then
+		session.viewFrom = Vector(current.x, current.y, current.z)
+		session.viewTarget = Vector(target.x, target.y, target.z)
+		-- The native crouch eye animation starts on the following movement tick.
+		-- Match that delay so the camera doesn't drop a frame ahead of the hull.
+		session.viewStarted = now + engine.TickInterval()
+		local duration = session.duckTarget and ply:GetDuckSpeed() or ply:GetUnDuckSpeed()
+		session.viewDuration = math.max(0, duration or 0)
+	end
+
+	return current
+end
 
 -- Query the BSP's spatial partition instead of scanning every leaf on every
 -- ground, stair, ladder and slide probe. Child indices < 0 encode leaf indices.
 function Session:QueryLeafs(lo, hi)
 	local result, stack = {}, { 0 }
+	local lx, ly, lz, hx, hy, hz = lo.x, lo.y, lo.z, hi.x, hi.y, hi.z
 	while #stack > 0 do
 		local index = stack[#stack]
 		stack[#stack] = nil
@@ -21,8 +68,9 @@ function Session:QueryLeafs(lo, hi)
 			local node = self.nodes[index]
 			if node then
 				local n, dist = node.plane.normal, node.plane.dist
-				local low = n.x * (n.x < 0 and hi.x or lo.x) + n.y * (n.y < 0 and hi.y or lo.y) + n.z * (n.z < 0 and hi.z or lo.z) - dist
-				local high = n.x * (n.x < 0 and lo.x or hi.x) + n.y * (n.y < 0 and lo.y or hi.y) + n.z * (n.z < 0 and lo.z or hi.z) - dist
+				local nx, ny, nz = n.x, n.y, n.z
+				local low = nx * (nx < 0 and hx or lx) + ny * (ny < 0 and hy or ly) + nz * (nz < 0 and hz or lz) - dist
+				local high = nx * (nx < 0 and lx or hx) + ny * (ny < 0 and ly or hy) + nz * (nz < 0 and lz or hz) - dist
 				if high >= -0.03125 then stack[#stack + 1] = node.children[1] end
 				if low <= 0.03125 then stack[#stack + 1] = node.children[2] end
 			end
@@ -40,6 +88,12 @@ end
 -- against its planes. The BSP partitions select brushes; render-leaf bounds
 -- must not reject player clips or brush sections extending beyond those bounds.
 function Session:TraceHull(start, finish, mins, maxs, mask, out)
+	-- Vector component access crosses the engine boundary. Read each input
+	-- once instead of doing that again for every side of every queried brush.
+	local sx, sy, sz = start.x, start.y, start.z
+	local ex, ey, ez = finish.x, finish.y, finish.z
+	local minX, minY, minZ = mins.x, mins.y, mins.z
+	local maxX, maxY, maxZ = maxs.x, maxs.y, maxs.z
 	out = out or {}
 	out.Fraction, out.Hit, out.StartSolid, out.AllSolid = 1, false, false, false
 	out.HitWorld, out.Entity = false, game.GetWorld()
@@ -47,8 +101,8 @@ function Session:TraceHull(start, finish, mins, maxs, mask, out)
 	out.Contents, out.SurfaceProps = 0, 0
 	out.Displacement = false
 	out.Texinfo, out.SurfaceName = nil, nil -- the surface that was hit, for the sound of a step: a texinfo, or the name of a surface property
-	local lo = {x = math.min(start.x, finish.x) + mins.x, y = math.min(start.y, finish.y) + mins.y, z = math.min(start.z, finish.z) + mins.z}
-	local hi = {x = math.max(start.x, finish.x) + maxs.x, y = math.max(start.y, finish.y) + maxs.y, z = math.max(start.z, finish.z) + maxs.z}
+	local lo = {x = math.min(sx, ex) + minX, y = math.min(sy, ey) + minY, z = math.min(sz, ez) + minZ}
+	local hi = {x = math.max(sx, ex) + maxX, y = math.max(sy, ey) + maxY, z = math.max(sz, ez) + maxZ}
 	local seen = {}
 	for _, leaf in ipairs(self:QueryLeafs(lo, hi)) do
 		for _, brush in ipairs(leaf:GetBrushes()) do
@@ -58,9 +112,10 @@ function Session:TraceHull(start, finish, mins, maxs, mask, out)
 				local outside, endOutside, rejected = false, false, false
 				for _, side in ipairs(brush.sides) do
 					local n, dist = side.plane.normal, side.plane.dist
-					local offset = n.x * (n.x < 0 and maxs.x or mins.x) + n.y * (n.y < 0 and maxs.y or mins.y) + n.z * (n.z < 0 and maxs.z or mins.z)
-					local d1 = n.x * start.x + n.y * start.y + n.z * start.z + offset - dist
-					local d2 = n.x * finish.x + n.y * finish.y + n.z * finish.z + offset - dist
+					local nx, ny, nz = n.x, n.y, n.z
+					local offset = nx * (nx < 0 and maxX or minX) + ny * (ny < 0 and maxY or minY) + nz * (nz < 0 and maxZ or minZ)
+					local d1 = nx * sx + ny * sy + nz * sz + offset - dist
+					local d2 = nx * ex + ny * ey + nz * ez + offset - dist
 					if d1 > 0 then outside = true end
 					if d2 > 0 then endOutside = true end
 					-- A clipped surf velocity is tangent to the plane. Double
@@ -91,9 +146,10 @@ function Session:TraceHull(start, finish, mins, maxs, mask, out)
 		end
 	end
 	self:TracePropsAndDisplacements(start, finish, mins, maxs, mask, lo, hi, out)
+	PocketMap.MapIO.Trace(self, start, finish, mins, maxs, out)
 	out.Hit = out.Fraction < 1 or out.StartSolid
 	out.HitWorld = out.Hit
-	out.HitPos = {x = start.x + (finish.x - start.x) * out.Fraction, y = start.y + (finish.y - start.y) * out.Fraction, z = start.z + (finish.z - start.z) * out.Fraction}
+	out.HitPos = {x = sx + (ex - sx) * out.Fraction, y = sy + (ey - sy) * out.Fraction, z = sz + (ez - sz) * out.Fraction}
 	return out
 end
 
@@ -189,6 +245,7 @@ local function sendWalkStateIfDue(session)
 end
 
 function Walk.Leave()
+	if PocketMap.Flashlight then PocketMap.Flashlight.Stop() end
 	local session = Walk.session
 	Walk.session = nil
 	if PocketMap.GamemodeMovement then PocketMap.GamemodeMovement.Reset() end
@@ -282,7 +339,8 @@ function Walk.ToggleNoclip()
 	local mv = session.move
 	if session.noclip then
 		local duck = bit.band(mv.buttons, IN_DUCK) ~= 0
-		local trace = session:TraceHull(mv.origin, mv.origin, Vector(-16, -16, 0), Vector(16, 16, duck and 36 or 72))
+		local mins, maxs = PocketMap.Movement.PlayerHull(LocalPlayer(), duck)
+		local trace = session:TraceHull(mv.origin, mv.origin, mins, maxs)
 		if trace.StartSolid then
 			chat.AddText("[PocketMap] Move out of the solid geometry before turning noclip off.")
 			return
@@ -297,7 +355,6 @@ concommand.Add("pocketmap_noclip", Walk.ToggleNoclip)
 local SPAWN_CLASS_PREFIX = "info_player_"
 local SPAWN_CLASSES = { info_player_start = true, info_player_teamspawn = true, info_coop_spawn = true, info_survivor_position = true }
 local SPAWN_LIFT = Vector(0, 0, 2)
-local STAND_MINS, STAND_MAXS = Vector(-16, -16, 0), Vector(16, 16, 72)
 
 local function isSpawnEntity(ent)
 	local class = ent.classname or ""
@@ -317,7 +374,8 @@ local function spawnPosition(ent)
 end
 
 local function isSpawnClear(session, position)
-	return not session:TraceHull(position, position, STAND_MINS, STAND_MAXS).StartSolid
+	local mins, maxs = PocketMap.Movement.PlayerHull(LocalPlayer(), false)
+	return not session:TraceHull(position, position, mins, maxs).StartSolid
 end
 
 local function randomClearSpawn(session)
@@ -331,6 +389,45 @@ local function randomClearSpawn(session)
 end
 
 local createMove, setupMove, runStep
+
+-- Source-map traces without creating a player or changing the active session.
+function Walk.CollisionSession(mini, io)
+	return setmetatable({ mini = mini, bsp = mini.bsp, nodes = mini.bsp:GetNodes(), leafs = mini.bsp:GetLeafs(),
+		displacements = mini.displacementCollision, physics = mini.physics or nil, io = io or PocketMap.MapIO.NewSession(mini) }, Session)
+end
+
+local function newWalkSession(ply, mini, io)
+	local session = Walk.CollisionSession(mini, io)
+	local pos, angles = randomClearSpawn(session)
+	if not pos then return end
+	session.move = setmetatable({ origin = pos, velocity = Vector(), angles = angles, moveAngles = angles, buttons = 0, oldButtons = 0, forward = 0, side = 0, up = 0, maxSpeed = 320, maxClientSpeed = 320, impulse = 0, constraintCenter = Vector(), constraintRadius = 0, constraintWidth = 0, constraintSpeedFactor = 1, finalStepHeight = 0, finalIdealVelocity = Vector(), finalJumpVelocity = Vector() }, { __index = Move })
+	session.yawOffset = angles.y - ply:EyeAngles().y
+	session.ducking, session.duckTarget, session.crouchFlag = false, false, false
+	session.enteredAt = RealTime()
+	session.command, session.inputs = 0, {}
+	return session
+end
+
+function Walk.Respawn()
+	local previous, ply = Walk.session, LocalPlayer()
+	if not previous or not IsValid(ply) or not ply:Alive() then return false end
+	local mini = previous.mini
+	if not IsValid(mini.ent) or mini.state ~= "ready" then return false end
+	-- A new movement session clears crouching, fall speed, ladders and cached
+	-- commands. Keep the miniature's doors and other map logic as they were.
+	local session = newWalkSession(ply, mini, previous.io)
+	if not session then return false end
+	session.io.touching = {}
+	if PocketMap.GamemodeMovement then PocketMap.GamemodeMovement.Reset() end
+	Walk.session = session
+	sendWalkState(session, true, false)
+	return true
+end
+
+net.Receive("PocketMap_Respawn", function()
+	local block, session = net.ReadEntity(), Walk.session
+	if session and session.mini.ent == block then session.respawnReady = true end
+end)
 
 local function prepareCollisionThenEnter(ent, mini)
 	PocketMap.Physics.Prepare(mini, function()
@@ -350,14 +447,9 @@ function Walk.Enter(ent)
 
 	if mini.physics == nil then return prepareCollisionThenEnter(ent, mini) end
 
-	local session = setmetatable({ mini = mini, bsp = mini.bsp, nodes = mini.bsp:GetNodes(), leafs = mini.bsp:GetLeafs(), displacements = mini.displacementCollision, physics = mini.physics or nil }, Session)
-	local pos, angles = randomClearSpawn(session)
-	if not pos then chat.AddText("[PocketMap] No clear player spawn was found in this map.") return end
-	session.move = setmetatable({ origin = pos, velocity = Vector(), angles = angles, moveAngles = angles, buttons = 0, oldButtons = 0, forward = 0, side = 0, up = 0, maxSpeed = 320, maxClientSpeed = 320, impulse = 0, constraintCenter = Vector(), constraintRadius = 0, constraintWidth = 0, constraintSpeedFactor = 1, finalStepHeight = 0, finalIdealVelocity = Vector(), finalJumpVelocity = Vector() }, { __index = Move })
-	session.yawOffset = angles.y - ply:EyeAngles().y
-	session.enteredAt = RealTime()
+	local session = newWalkSession(ply, mini)
+	if not session then chat.AddText("[PocketMap] No clear player spawn was found in this map.") return end
 	Walk.session = session
-	session.command, session.inputs = 0, {}
 	hook.Add("CreateMove", MOVE_HOOK, createMove)
 	hook.Add("SetupMove", MOVE_HOOK, setupMove)
 	hook.Add("HUDPaint", HUD_HOOK, drawWalkHud)
@@ -394,7 +486,22 @@ function createMove(cmd)
 	local session = Walk.session
 	if not session then return end
 	local ply, mini = LocalPlayer(), session.mini
-	if not IsValid(ply) or not ply:Alive() or ply:InVehicle() or not IsValid(mini.ent) or mini.state ~= "ready" then Walk.Leave() return end
+	if mini.entityRefresh then
+		session.inputs = {}
+		cmd:ClearMovement()
+		cmd:ClearButtons()
+		return
+	end
+	if not IsValid(ply) or ply:InVehicle() or not IsValid(mini.ent) or mini.state ~= "ready" then Walk.Leave() return end
+	if not ply:Alive() then
+		session.waitingForRespawn, session.inputs = true, {}
+		cmd:ClearMovement()
+		return -- Keep attack/use available for the gamemode's normal respawn.
+	end
+	if session.respawnReady then
+		if Walk.Respawn() then session = Walk.session end
+	end
+	if session.waitingForRespawn then cmd:ClearMovement() return end
 
 	local number = cmd:CommandNumber()
 	if number > 0 and number > session.command and not session.inputs[number] then
@@ -428,6 +535,7 @@ function runStep(ply, session, cmd, number)
 	mv.speedModified = false
 	mv.impulse = input.impulse
 	PocketMap.GamemodeMovement.Step(ply, mv, cmd, session)
+	PocketMap.MapIO.Step( session, engine.TickInterval() )
 	if isNoclippingOutsideBlock(session) then
 		Walk.Leave()
 	else
@@ -438,21 +546,26 @@ end
 
 function setupMove(ply, _, cmd)
 	local session = Walk.session
-	if not session or ply ~= LocalPlayer() or PocketMap.GamemodeMovement.active then return end
+	if not session or session.mini.entityRefresh or ply ~= LocalPlayer() or not ply:Alive() or session.waitingForRespawn or PocketMap.GamemodeMovement.active then return end
 	runStep(ply, session, cmd, cmd:CommandNumber())
 end
 
 function Walk.View(fov, zfar)
 	local session = Walk.session
+	if session and session.mini.entityRefresh then return session.lastView end
 	if not session or not IsValid(session.mini.ent) or session.mini.state ~= "ready" then Walk.Leave() return end
 	local mini, mv = session.mini, session.move
-	local height = not session.noclip and bit.band(mv.buttons, IN_DUCK) ~= 0 and 28 or 64
-	local eye = mv.origin + Vector(0, 0, height)
+	local eye = mv.origin + Walk.EyeOffset(session)
 	local origin = mini.ent:LocalToWorld((eye - mini.mapCenter) * mini.scale + mini.boxCenter)
 	local angles = mini.ent:LocalToWorldAngles(mv.angles)
-	local near = math.max(0.001, mini.scale * 0.5)
+	-- Keep the source map's normal 7-unit near clip after scaling it into the
+	-- miniature. Half a source unit exhausts depth precision at distant props,
+	-- causing faces to flicker as the camera moves.
+	local near = math.max(0.001, mini.scale * 7)
 	PocketMap.Water.NoteView(origin, angles, fov, near, zfar)
-	return { origin = origin, angles = angles, fov = fov, znear = near, zfar = zfar, drawviewer = true }
+	local view = { origin = origin, angles = angles, fov = fov, znear = near, zfar = zfar, drawviewer = true }
+	session.lastView = view
+	return view
 end
 
 local function aimedBlock(ply)
@@ -494,3 +607,11 @@ PocketMap.Hooks.Register("PlayerBindPress", "PocketMap_WalkKey", function(ply, b
 		return true
 	end
 end)
+
+-- Refresh the callbacks and collision methods without dropping a live walk.
+if Walk.session then
+	setmetatable(Walk.session, Session)
+	hook.Add("CreateMove", MOVE_HOOK, createMove)
+	hook.Add("SetupMove", MOVE_HOOK, setupMove)
+	hook.Add("HUDPaint", HUD_HOOK, drawWalkHud)
+end
