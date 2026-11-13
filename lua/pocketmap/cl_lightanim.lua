@@ -19,7 +19,8 @@ PocketMap.Hooks.Register( "Think", "PocketMap_LightStyles", function()
 	tick = LightStyles.CurrentTick()
 
 	for mini in pairs( PocketMap.Active ) do
-		if mini.atlasObject and mini.state == "ready" and IsValid( mini.ent ) and mini:EyeInside() then
+		if mini.atlasObject and mini.state == "ready" and IsValid( mini.ent ) and mini:EyeInside()
+			and ( not PocketMap.Settings or PocketMap.Settings.Enabled( mini, "animated_lights" ) and PocketMap.Settings.Enabled( mini, "lighttoggle" ) ) then
 			mini.atlasObject:Update( weightsOf( mini ), FACES_PER_FRAME )
 		end
 	end

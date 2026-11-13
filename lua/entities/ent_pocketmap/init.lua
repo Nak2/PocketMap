@@ -20,6 +20,7 @@ local MAX_WALK_SPEED = 10000
 local WALKER_ID = "PocketMap_Walkers"
 
 local walkers = {}
+local respawns = {}
 local stopWalkersOn
 
 local cvAdminOnly = CreateConVar( "pocketmap_adminonly", "0", FCVAR_ARCHIVE, "1 = only admins can change the map of a block.", 0, 1 )
@@ -187,6 +188,7 @@ local function stopWalker( ply )
 	if not walker then return end
 
 	walkers[ply] = nil
+	if PocketMap.FlashlightServer then PocketMap.FlashlightServer.Stop( ply ) end
 	if IsValid( walker.block ) then
 		refreshRecipients( walker )
 		relayWalker( walker, false )
@@ -205,9 +207,17 @@ local function stopStaleWalkers()
 	end
 end
 
+local function walkerDied( ply )
+	local walker = walkers[ply]
+	if walker and IsValid( walker.block ) then
+		respawns[ply] = { block = walker.block, mapName = walker.block:GetMapName(), position = walker.returnPosition }
+	end
+	stopWalker( ply )
+end
+
 local function installWalkerHooks()
 	hook.Add( "PlayerDisconnected", WALKER_ID, stopWalker )
-	hook.Add( "PostPlayerDeath", WALKER_ID, stopWalker )
+	hook.Add( "PostPlayerDeath", WALKER_ID, walkerDied )
 	timer.Create( WALKER_ID, WALK_STALE_CHECK_SECONDS, 0, stopStaleWalkers )
 end
 
@@ -225,8 +235,10 @@ local function trackedWalker( ply, block )
 	if not mayStartWalking( ply, block ) then return end
 
 	local wasIdle = next( walkers ) == nil
-	walker = { ply = ply, index = ply:EntIndex(), block = block, recipients = {}, nextRecipientRefresh = 0 }
+	walker = { ply = ply, index = ply:EntIndex(), block = block, recipients = {}, nextRecipientRefresh = 0,
+		returnPosition = block:WorldToLocal( ply:GetPos() ) }
 	walkers[ply] = walker
+	if PocketMap.FlashlightServer then PocketMap.FlashlightServer.Start( ply ) end
 	if wasIdle then installWalkerHooks() end
 	return walker
 end
@@ -247,11 +259,35 @@ function stopWalkersOn( block )
 	for ply, walker in pairs( walkers ) do
 		if walker.block == block then stopWalker( ply ) end
 	end
+	for ply, resume in pairs( respawns ) do
+		if resume.block == block then respawns[ply] = nil end
+	end
 end
+
+hook.Add( "PlayerDisconnected", "PocketMap_WalkRespawn", function( ply ) respawns[ply] = nil end )
+
+hook.Add( "PlayerSpawn", "PocketMap_WalkRespawn", function( ply )
+	local resume = respawns[ply]
+	if not resume then return end
+	-- Wait until the gamemode has finished choosing the real player's spawn.
+	timer.Simple( 0, function()
+		if respawns[ply] ~= resume then return end
+		respawns[ply] = nil
+		local block = resume.block
+		if not IsValid( ply ) or not isPocketMap( block ) or block:GetMapName() ~= resume.mapName then return end
+		if not mayStartWalking( ply, block ) then return end
+		ply:SetPos( block:LocalToWorld( resume.position ) )
+		ply.PocketMapIgnoreWalkUntil = nil
+		net.Start( "PocketMap_Respawn" )
+			net.WriteEntity( block )
+		net.Send( ply )
+	end )
+end )
 
 net.Receive( "PocketMap_Ply", function( _, ply )
 	local block, active = net.ReadEntity(), net.ReadBool()
 	if not active then
+		respawns[ply] = nil
 		ply.PocketMapIgnoreWalkUntil = CurTime() + WALK_LEAVE_GRACE_SECONDS
 		return stopWalker( ply )
 	end

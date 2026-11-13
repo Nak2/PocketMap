@@ -320,6 +320,7 @@ local function resumeUntil( co, deadline )
 end
 
 function Physics.Prepare( mini, done )
+	if PocketMap.Settings and not PocketMap.Settings.Enabled( mini, "prop_collision" ) then mini.physics = false done() return end
 	if mini.physics ~= nil then done() return end
 	if mini.physicsPreparing then return end
 	mini.physicsPreparing = true

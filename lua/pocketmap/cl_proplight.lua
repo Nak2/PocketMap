@@ -1,47 +1,24 @@
--- The light of a prop, the way the engine lights a model: the ambient light cube of the leaf it stands in. Each side is
--- { r, g, b } in linear light, in the order of render.SetModelLighting: +X, -X, +Y, -Y, +Z, -Z.
-
+-- Model lighting in source-map coordinates: indirect ambient cubes and the
+-- strongest visible world lights. The renderer rebases both with the miniature.
 if not PocketMap.Mini then return end
 
-PocketMap.PropLight = {}
+PocketMap.PropLight = PocketMap.PropLight or {}
 local PropLight = PocketMap.PropLight
 PropLight.__index = PropLight
 
-local SIDES = 6
-local MIN_SIDE_LIGHT = 0.1
-local SUN_REACH = 32768
-local SUN_START_OFFSET = 4
-local FLOOR_PROBE_UP, FLOOR_PROBE_DOWN = 4, 512
-local FIRST_SWITCHABLE_STYLE = 32
-
-local CUBE_NORMALS = { Vector( 1, 0, 0 ), Vector( -1, 0, 0 ), Vector( 0, 1, 0 ), Vector( 0, -1, 0 ), Vector( 0, 0, 1 ), Vector( 0, 0, -1 ) }
-local FLOOR_SIDES = { 0.5, 0.5, 0.5, 0.5, 1, 0.25 }
-
+local NORMALS = { Vector( 1, 0, 0 ), Vector( -1, 0, 0 ), Vector( 0, 1, 0 ), Vector( 0, -1, 0 ), Vector( 0, 0, 1 ), Vector( 0, 0, -1 ) }
 local GRAY_CUBE = {}
-for side = 1, SIDES do GRAY_CUBE[side] = { 0.5, 0.5, 0.5 } end
+local EMPTY_DIRECT = {}
+for side = 1, 6 do GRAY_CUBE[side] = { 0.5, 0.5, 0.5 } end
+local SUN_REACH, MAX_LIGHTS = 32768, 4
+local ZERO_ANGLE = Angle()
 
-local function isAnimatedStyle( style )
-	return style > 0 and style < FIRST_SWITCHABLE_STYLE
-end
-
----A light_environment becomes two world lights: the sky ambient, which is in the cubes, and the sun, which is not.
----A named one (gm_construct's sun_light) has a style of 32 or more and can be switched off.
----@return table? sun
----@return number weight
-local function findSun( bsp, hdr, weights )
+local function worldLights( bsp, hdr )
 	local lights = hdr and bsp:GetWorldLightsHDR() or bsp:GetWorldLights()
 	if next( lights ) == nil then lights = bsp:GetWorldLights() end
-
-	for _, worldLight in pairs( lights ) do
-		if worldLight:IsSkyLight() and not isAnimatedStyle( worldLight.style ) then
-			local weight = weights[worldLight.style] or 1
-			if weight > 0 then return worldLight, weight end
-		end
-	end
-	return nil, 1
+	return lights
 end
 
----Reads the lumps the lookups need, so that does not happen in the middle of a loader step.
 function PropLight.Prepare( bsp, hdr )
 	if hdr then
 		bsp:GetLeafAmbientIndexHDR()
@@ -50,127 +27,203 @@ function PropLight.Prepare( bsp, hdr )
 		bsp:GetLeafAmbientIndex()
 		bsp:GetLeafAmbientLighting()
 	end
+	worldLights( bsp, hdr )
 end
 
----@param mini table
----@param bsp BSPObject
----@param lightToggle boolean # false: no sun, the cube only
 function PropLight.New( mini, bsp, lightToggle )
-	local light = setmetatable( {
-		bsp = bsp,
-		hdr = mini.lighting == "HDR",
-		weights = mini.lightStyleWeights,
-		leafCubes = {},
-		faceLights = {},
-		sunWeight = 1,
-	}, PropLight )
-
-	if lightToggle then light.sun, light.sunWeight = findSun( bsp, light.hdr, light.weights ) end
-	if light.sun then light.toSun = -Vector( light.sun.normal ) end
-	return light
+	local lights = {}
+	for _, light in pairs( worldLights( bsp, mini.lighting == "HDR" ) ) do
+		-- Small surface emitters are already included in the ambient cube by VRAD.
+		if light.type <= 3 and bit.band( light.flags or 0, 1 ) == 0
+			and ( lightToggle or light.style == 0 ) then lights[#lights + 1] = light end
+	end
+	return setmetatable( { bsp = bsp, mini = mini, hdr = mini.lighting == "HDR",
+		lights = lights, leafCubes = {}, modelInfo = {} }, PropLight )
 end
 
-local function lightPosition( prop )
-	return prop.LightOrigin or prop.Origin
+function PropLight:Position( prop, model )
+	if prop.LightOrigin then return prop.LightOrigin end
+	if not model then return prop.Origin end
+	local info = self.modelInfo[model]
+	if info == nil then
+		info = util.GetModelInfo( model ) or false
+		self.modelInfo[model] = info
+	end
+	if not info or not info.IllumPosition then return prop.Origin end
+	return LocalToWorld( info.IllumPosition * ( prop.UniformScale or 1 ), ZERO_ANGLE, prop.Origin, prop.Angles or ZERO_ANGLE )
 end
 
----Leaves with one sample have the same light everywhere, so their cube is kept.
-function PropLight:AmbientCube( prop )
-	local at = lightPosition( prop )
+function PropLight:AmbientCube( at )
 	local leaf = self.bsp:PointInLeaf( 0, at )
 	if not leaf then return GRAY_CUBE end
-
 	local samples = leaf:GetAmbientLighting( self.hdr )
 	if #samples == 0 then return GRAY_CUBE end
-
-	local single = #samples == 1
-	local id = leaf:GetIndex()
+	local single, id = #samples == 1, leaf:GetIndex()
 	if single and self.leafCubes[id] then return self.leafCubes[id] end
-
 	local colors = leaf:CalculateAmbientCube( at, self.hdr )
 	if not colors then return GRAY_CUBE end
-
 	local cube = {}
-	for side = 1, SIDES do
+	for side = 1, 6 do
 		local c = colors[side]
-		cube[side] = { math.max( c.r, MIN_SIDE_LIGHT ), math.max( c.g, MIN_SIDE_LIGHT ), math.max( c.b, MIN_SIDE_LIGHT ) }
+		-- Black is valid baked lighting, including in a brightly lit room whose
+		-- light comes almost entirely from nearby direct lights.
+		cube[side] = { math.max( c.r, 0 ), math.max( c.g, 0 ), math.max( c.b, 0 ) }
 	end
-
 	if single then self.leafCubes[id] = cube end
 	return cube
 end
 
----The sun reaches a prop when a line towards it meets the sky before a wall or a roof.
-function PropLight:SunReaches( prop )
-	if not self.sun then return false end
-
-	local start = lightPosition( prop ) + self.toSun * SUN_START_OFFSET
-	local trace = self.bsp:SurfaceTraceLine( start, start + self.toSun * SUN_REACH )
-	return not trace.Hit or trace.HitSky == true
+local function angularScale( light, direction )
+	if light.type == 0 then return math.max( 0, light.normal:Dot( direction ) ) end
+	if light.type ~= 2 then return 1 end
+	local dot = light.normal:Dot( direction )
+	if dot <= light.stopdot2 then return 0 end
+	if dot >= light.stopdot then return 1 end
+	return ( ( dot - light.stopdot2 ) / ( light.stopdot - light.stopdot2 ) ) ^ light.exponent
 end
 
----Each side gets the sun times how much it faces it.
-function PropLight:WithSun( cube )
-	local intensity = self.sun.intensity
-	local lit = {}
+local function lightStrength( light, at )
+	if light.type == 3 then return 1 end
+	local delta = at - light.origin
+	local distance = delta:Length()
+	if light.radius > 0 and distance > light.radius then return 0 end
+	local direction = distance > 0 and delta / distance or Vector()
+	local angle = angularScale( light, direction )
+	local denominator = light.type == 0 and distance * distance or
+		light.constant_attn + light.linear_attn * distance + light.quadratic_attn * distance * distance
+	return angle / math.max( denominator, 0.000001 )
+end
 
-	for side = 1, SIDES do
-		local facing = math.max( CUBE_NORMALS[side]:Dot( self.toSun ), 0 ) * self.sunWeight
-		local c = cube[side]
-		lit[side] = { c[1] + intensity.x * facing, c[2] + intensity.y * facing, c[3] + intensity.z * facing }
+function PropLight:DirectLights( at, pause )
+	if PocketMap.Settings and not PocketMap.Settings.Enabled( self.mini, "prop_direct" ) then return EMPTY_DIRECT end
+	local candidates = {}
+	for i, light in ipairs( self.lights ) do
+		if pause and i % 64 == 0 then pause() end
+		local strength = lightStrength( light, at )
+		local intensity = light.intensity
+		local weight = self.mini.lightStyleWeights and self.mini.lightStyleWeights[light.style] or 1
+		local animated = self.mini.lightStyles and self.mini.lightStyles.animated[light.style]
+		local score = strength * math.max( intensity.x, intensity.y, intensity.z ) * ( animated and 2 or weight )
+		if score > 0 then candidates[#candidates + 1] = { light = light, score = score } end
 	end
-	return lit
-end
-
----The average light of a face, all its styles added: { r, g, b }, or nil if it has no lightmap.
-function PropLight:FaceLight( face )
-	local cached = self.faceLights[face.__id]
-	if cached ~= nil then return cached or nil end
-
-	local r, g, b, found = 0, 0, 0, false
-	local samples = face:GetLightmapSamples( self.hdr )
-
-	if samples and samples.styles then
-		for i, style in ipairs( samples.styles ) do
-			local average = samples.average[i]
-			if average then
-				found = true
-				local weight = self.weights[style] or ( isAnimatedStyle( style ) and 0.5 or 1 )
-				r = r + weight * ( average.color.r * 2 / 255 ) ^ 2.2
-				g = g + weight * ( average.color.g * 2 / 255 ) ^ 2.2
-				b = b + weight * ( average.color.b * 2 / 255 ) ^ 2.2
-			end
+	table.sort( candidates, function( a, b ) return a.score > b.score end )
+	local visible = {}
+	for i, candidate in ipairs( candidates ) do
+		if pause and i % 8 == 0 then pause() end
+		local light = candidate.light
+		local target = light.type == 3 and at - light.normal * SUN_REACH or light.origin
+		local blocked
+		if light.type ~= 3 and self.bsp.SurfaceTraceBlocked then
+			blocked = self.bsp:SurfaceTraceBlocked( at, target )
+		else
+			-- Sunlight needs the nearest surface's sky flag. Older NikNaks
+			-- installations retain the full trace for every light as well.
+			local trace = self.bsp:SurfaceTraceLine( at, target )
+			blocked = trace.Hit and not ( light.type == 3 and trace.HitSky )
+		end
+		if not blocked then
+			visible[#visible + 1] = light
+			if #visible == MAX_LIGHTS then break end
 		end
 	end
-
-	self.faceLights[face.__id] = found and { r, g, b } or false
-	return found and self.faceLights[face.__id] or nil
+	return visible
 end
 
-function PropLight:FloorLight( prop )
-	local from = lightPosition( prop ) + Vector( 0, 0, FLOOR_PROBE_UP )
-	local trace = self.bsp:SurfaceTraceLine( from, from - Vector( 0, 0, FLOOR_PROBE_DOWN ) )
-	if trace.Hit and trace.Face then return self:FaceLight( trace.Face ) end
-end
-
----The cubes only hold light style 0, so a prop in the shade of a switchable sun would be almost black next to the floor it
----stands on. The floor's lightmap has every style, so it is the least ambient the prop gets.
-local function withFloor( cube, floor )
-	local lit = {}
-	for side = 1, SIDES do
-		local c, factor = cube[side], FLOOR_SIDES[side]
-		lit[side] = { math.max( c[1], floor[1] * factor ), math.max( c[2], floor[2] * factor ), math.max( c[3], floor[3] * factor ) }
+function PropLight:Of( prop, model, pause )
+	local at = self:Position( prop, model )
+	if PocketMap.Settings and not PocketMap.Settings.Enabled( self.mini, "prop_lighting" ) then
+		local light = { at = at, direct = EMPTY_DIRECT, mini = self.mini, fullbright = true }
+		for side = 1, 6 do light[side] = Vector( 1, 1, 1 ) end
+		return light
 	end
-	return lit
+	local ambient = self:AmbientCube( at )
+	local light = { at = at, direct = self:DirectLights( at, pause ), mini = self.mini }
+	for side = 1, 6 do light[side] = ambient[side] end
+	return light
 end
 
----The ambient cube, plus the sun if it reaches the prop, else at least the light of the floor under it.
----@param prop table # { Origin, LightOrigin }
----@return table[] cube
-function PropLight:Of( prop )
-	local cube = self:AmbientCube( prop )
-	if self:SunReaches( prop ) then return self:WithSun( cube ) end
+-- Build once per render pass, and retain it while the source-to-world transform
+-- is unchanged. Cubes use world axes, independent of a particular prop's angle.
+function PropLight.Transform( matrix, previous )
+	local pos, angles, scale = matrix:GetTranslation(), matrix:GetAngles(), matrix:GetScale().x
+	if previous and previous.pos == pos and previous.angles == angles and previous.scale == scale then return previous end
+	local inverse = Matrix()
+	inverse:SetAngles( angles )
+	inverse:Invert()
+	local normals = {}
+	for side = 1, 6 do normals[side] = inverse * NORMALS[side] end
+	local copy = Matrix()
+	copy:Set( matrix )
+	return { matrix = copy, pos = pos, angles = angles, scale = scale, normals = normals }
+end
 
-	local floor = self:FloorLight( prop )
-	return floor and withFloor( cube, floor ) or cube
+local function rotateCube( cube, normals )
+	local rotated = {}
+	for side = 1, 6 do
+		local n = normals[side]
+		local x, y, z = cube[n.x >= 0 and 1 or 2], cube[n.y >= 0 and 3 or 4], cube[n.z >= 0 and 5 or 6]
+		rotated[side] = {}
+		for channel = 1, 3 do rotated[side][channel] = x[channel] * n.x^2 + y[channel] * n.y^2 + z[channel] * n.z^2 end
+	end
+	return rotated
+end
+
+function PropLight.ForRender( light, transform )
+	local styles = light.mini and light.mini.lightStyles
+	local sources = light.direct or EMPTY_DIRECT
+	local animated = false
+	if styles then
+		for _, source in ipairs( sources ) do
+			if styles.animated[source.style] then animated = true break end
+		end
+	end
+	local tick = animated and PocketMap.LightStyles.CurrentTick() or 0
+	local uniform = light.fullbright or light.mini and PocketMap.Settings and not PocketMap.Settings.Enabled( light.mini, "directional_prop_ambient" ) or false
+	local cached = light.rendered
+	if cached and cached.system == PropLight and cached.transform == transform and cached.tick == tick and ( cached.uniform ~= nil ) == uniform then return cached end
+	local cube, average
+	if uniform then
+		if not light.uniformCube then
+			average = { 0, 0, 0 }
+			for side = 1, 6 do for channel = 1, 3 do average[channel] = average[channel] + light[side][channel] / 6 end end
+			light.uniformCube = {}
+			for side = 1, 6 do light.uniformCube[side] = average end
+		end
+		cube, average = light.uniformCube, light.uniformCube[1]
+	else
+		cube = cached and not cached.uniform and cached.transform == transform and cached.cube or rotateCube( light, transform.normals )
+	end
+	local direct = #sources > 0 and {} or EMPTY_DIRECT
+	local scale = transform.scale
+	for _, source in ipairs( sources ) do
+		local weight = styles and PocketMap.LightStyles.WeightAtTick( styles, source.style, tick )
+			or ( light.mini and light.mini.lightStyleWeights and light.mini.lightStyleWeights[source.style] ) or 1
+		local color = source.intensity * weight
+		if source.type == 0 then color = color * angularScale( source, ( light.at - source.origin ):GetNormalized() ) end
+		-- BSP skylights and LightDesc_t both store the direction light travels.
+		-- The model shader negates it for N dot L; negating here as well lights
+		-- the undersides of props and leaves their sun-facing surfaces dark.
+		local dir = Vector( source.normal )
+		dir:Rotate( transform.angles )
+		local constant = source.type == 3 and 1 or source.type == 0 and 0 or source.constant_attn
+		local linear = source.type == 0 and 0 or source.linear_attn / scale
+		local quadratic = ( source.type == 0 and 1 or source.quadratic_attn ) / ( scale * scale )
+		-- SetLocalModelLights uses LightDesc_t::SetupOldStyleAttenuation,
+		-- which multiplies color by the denominator at 100 world units. BSP
+		-- intensities already include that normalization; undo it at this scale.
+		local normalization = constant + linear * 100 + quadratic * 10000
+		if normalization > 0 then color = color / normalization end
+		direct[#direct + 1] = {
+			type = source.type == 3 and 2 or source.type == 2 and 3 or 1,
+			color = color, pos = transform.matrix * source.origin, dir = dir,
+			range = source.radius * scale,
+			constantFalloff = constant, linearFalloff = linear, quadraticFalloff = quadratic,
+			innerAngle = math.deg( math.acos( math.Clamp( source.stopdot, -1, 1 ) ) ),
+			outerAngle = math.deg( math.acos( math.Clamp( source.stopdot2, -1, 1 ) ) ),
+			angularFalloff = source.exponent,
+		}
+	end
+	cached = { system = PropLight, transform = transform, tick = tick, cube = cube, direct = direct, uniform = average }
+	light.rendered = cached
+	return cached
 end

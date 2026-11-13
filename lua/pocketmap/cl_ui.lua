@@ -9,7 +9,6 @@ local TOP_BAR_H = 28
 local FRAME_MARGIN = 100
 local FRAME_MAX_W, FRAME_MAX_H = 1000, 700
 local SCROLL_AND_BORDER_W = 48
-local SETTING_BOX_MARGIN = 6
 
 local COLOR_BOX = Color( 55, 60, 72 )
 local COLOR_HEADER_HOVER = Color( 70, 80, 100 )
@@ -17,21 +16,6 @@ local COLOR_TILE = Color( 45, 45, 50 )
 local COLOR_TILE_CURRENT = Color( 60, 130, 80 )
 local COLOR_TILE_HOVER = Color( 70, 110, 160 )
 local COLOR_NO_ICON = Color( 120, 120, 120 )
-
-local SETTINGS = {
-	{
-		text = "Baked Models", width = 130, conVar = "pocketmap_propmeshes", default = false, reloadsMap = true,
-		tooltip = "On: the meshes of the models are baked into the tiny map when it loads.\nOff: every model is drawn as a model of its own (ClientsideModel). Slower with many props, but the engine lights and draws them. (Models that only work as static props are baked either way.)\nThe map of this block is loaded again when you change it.",
-	},
-	{
-		text = "Light Toggles", width = 120, conVar = "pocketmap_lighttoggle", default = true, reloadsMap = true,
-		tooltip = "On: the lights that can be switched (a light with a name, like the sun of gm_construct) and the animated lights are part of the light of the map and of its props.\nOff: only the first lightmap of every face is used.\nThe map of this block is loaded again when you change it.",
-	},
-	{
-		text = "Update Water", width = 120, conVar = "pocketmap_water", default = false, reloadsMap = false,
-		tooltip = "On: the water reflects and refracts the tiny map. Costs a lot of FPS: the map is drawn two more times a frame (only while you are inside the block).\nOff: the water is a flat surface.",
-	},
-}
 
 local function sendSelection( ent, name )
 	-- The server sees no change when the block already has this map, so a failed load is retried here
@@ -44,17 +28,6 @@ local function sendSelection( ent, name )
 		net.WriteEntity( ent )
 		net.WriteString( name )
 	net.SendToServer()
-end
-
-local function reloadMapOfBlock( ent )
-	if not IsValid( ent ) then return end
-
-	local map = ent:GetMapName()
-	if map == "" or ent.LoadedMap ~= map then return end
-
-	timer.Simple( 0, function()
-		if IsValid( ent ) then ent:AcceptMap() end
-	end )
 end
 
 local function listInstalledMaps()
@@ -92,7 +65,7 @@ end
 
 local function createFrame()
 	local frame = vgui.Create( "DFrame" )
-	frame:SetTitle( "Pocket Map - Map Browser" )
+	frame:SetTitle( "Pocket Map" )
 	frame:SetSize( math.min( ScrW() - FRAME_MARGIN, FRAME_MAX_W ), math.min( ScrH() - FRAME_MARGIN, FRAME_MAX_H ) )
 	frame:Center()
 	frame:MakePopup()
@@ -114,28 +87,6 @@ local function addEmptyButton( top, onClick )
 	button:SetWide( 110 )
 	button:SetText( "Empty the block" )
 	button.DoClick = onClick
-end
-
-local function addSettingBox( top, setting, ent )
-	local box = vgui.Create( "DPanel", top )
-	box:Dock( RIGHT )
-	box:DockMargin( 0, 0, SETTING_BOX_MARGIN, 0 )
-	box:SetWide( setting.width )
-	box.Paint = paintBox
-
-	local conVar = GetConVar( setting.conVar )
-
-	local checkbox = vgui.Create( "DCheckBoxLabel", box )
-	checkbox:SetPos( 8, 6 )
-	checkbox:SetText( setting.text )
-	checkbox:SetTextColor( color_white )
-	checkbox:SetTooltip( setting.tooltip )
-	checkbox:SizeToContents()
-	checkbox:SetValue( conVar and conVar:GetBool() or ( conVar == nil and setting.default ) )
-	checkbox.OnChange = function( _, value )
-		RunConsoleCommand( setting.conVar, value and "1" or "0" )
-		if setting.reloadsMap then reloadMapOfBlock( ent ) end
-	end
 end
 
 local function addFilterEntry( top, listedCount )
@@ -185,8 +136,9 @@ local function createTile( container, name, icons, isCurrent, onPick )
 	tile:SetVisible( false )
 	tile.MapName = name
 	tile.LowerName = string.lower( name )
+	tile.Selected = isCurrent
 	tile.DoClick = function() onPick( name ) end
-	tile.Paint = function( self, w, h ) paintTile( self, w, h, icons, isCurrent ) end
+	tile.Paint = function( self, w, h ) paintTile( self, w, h, icons, self.Selected ) end
 	return tile
 end
 
@@ -280,7 +232,7 @@ local function applyFilterToGroup( group, text )
 end
 
 ---@return fun( text: string ) # shows the maps that match the text
-local function createMapList( frame, order, byName, icons, current, onPick )
+local function createMapList( frame, order, byName, icons, current, onPick, rowWidth )
 	local scroll = vgui.Create( "DScrollPanel", frame )
 	scroll:Dock( FILL )
 
@@ -288,7 +240,7 @@ local function createMapList( frame, order, byName, icons, current, onPick )
 	container:Dock( TOP )
 	container.Paint = nil
 
-	local rowWidth = frame:GetWide() - SCROLL_AND_BORDER_W
+	rowWidth = rowWidth or frame:GetWide() - SCROLL_AND_BORDER_W
 	local groups = {}
 	local filterText = ""
 
@@ -309,7 +261,81 @@ local function createMapList( frame, order, byName, icons, current, onPick )
 	return function( text )
 		filterText = string.lower( text )
 		refresh()
+	end, function( name )
+		for _, group in ipairs( groups ) do
+			for _, tile in ipairs( group.tiles ) do tile.Selected = tile.MapName == name end
+		end
 	end
+end
+
+local function performancePage( frame, sheet, draft )
+	local page = vgui.Create( "DPanel", sheet )
+	page:DockPadding( 8, 8, 8, 8 )
+	page.Paint = nil
+	local presets = createTopBar( page )
+	presets:SetTall( 32 )
+	frame.PresetButtons, frame.SettingsBoxes = {}, {}
+	local status = vgui.Create( "DLabel", page )
+	status:Dock( TOP )
+	status:SetTall( 36 )
+	status:SetTextColor( color_white )
+	status:SetText( "Custom settings. Hover an option for its cost and visual impact. Changes apply with OK and Rebuild." )
+	status:SetWrap( true )
+	local refresh = false
+	for _, preset in ipairs( PocketMap.Settings.Presets ) do
+		local button = vgui.Create( "DButton", presets )
+		button:Dock( LEFT )
+		button:DockMargin( 0, 0, 8, 0 )
+		button:SetWide( 150 )
+		button:SetText( preset.name )
+		button:SetTooltip( preset.description )
+		button.DoClick = function()
+			local values = PocketMap.Settings.Preset( preset.key )
+			refresh = true
+			for key, box in pairs( frame.SettingsBoxes ) do draft[key] = values[key] box:SetValue( values[key] and 1 or 0 ) end
+			refresh = false
+			status:SetText( preset.name .. " selected. " .. preset.description )
+		end
+		frame.PresetButtons[preset.key] = button
+	end
+	local scroll = vgui.Create( "DScrollPanel", page )
+	scroll:Dock( FILL )
+	for _, group in ipairs( PocketMap.Settings.Groups ) do
+		local form = scroll:Add( "DForm" )
+		form:Dock( TOP )
+		form:DockMargin( 0, 0, 0, 8 )
+		form:SetName( group )
+		form:SetExpanded( true )
+		form.Paint = paintBox
+		for _, option in ipairs( PocketMap.Settings.Options ) do
+			if option.group == group then
+				local row = vgui.Create( "DPanel", form )
+				row:SetTall( 40 )
+				row.Paint = nil
+				local tooltip = option.detail .. "\n\nCost / benefit: " .. option.cost .. "\nVisual impact: " .. option.visual
+					.. "\nActual cost depends on the map and view."
+				local checkbox = vgui.Create( "DCheckBoxLabel", row )
+				checkbox:Dock( TOP )
+				checkbox:SetText( option.name )
+				checkbox:SetTextColor( color_white )
+				checkbox:SetTooltip( tooltip )
+				checkbox:SetValue( draft[option.key] and 1 or 0 )
+				checkbox.OnChange = function( _, value )
+					draft[option.key] = value == true
+					if not refresh then status:SetText( "Custom settings. Hover an option for its cost and visual impact. Changes apply with OK and Rebuild." ) end
+				end
+				local impact = vgui.Create( "DLabel", row )
+				impact:Dock( TOP )
+				impact:DockMargin( 20, 2, 0, 0 )
+				impact:SetText( option.cost .. "  |  Visual: " .. option.visual )
+				impact:SetTextColor( Color( 185, 200, 215 ) )
+				impact:SetTooltip( tooltip )
+				form:AddItem( row )
+				frame.SettingsBoxes[option.key] = checkbox
+			end
+		end
+	end
+	return page
 end
 
 function PocketMap.OpenMenu( ent )
@@ -319,28 +345,66 @@ function PocketMap.OpenMenu( ent )
 
 	local frame = createFrame()
 	PocketMap.Menu = frame
+	frame.SettingsDraft = PocketMap.Settings.Read( ent )
+	frame.PendingMap = ent:GetMapName()
+	local footer = vgui.Create( "DPanel", frame )
+	footer:Dock( BOTTOM )
+	footer:SetTall( 38 )
+	footer:DockMargin( 0, 8, 0, 0 )
+	footer.Paint = nil
+	local apply = vgui.Create( "DButton", footer )
+	apply:Dock( RIGHT )
+	apply:SetWide( 170 )
+	apply:SetText( "OK and Rebuild" )
+	frame.RebuildButton = apply
+	local cancel = vgui.Create( "DButton", footer )
+	cancel:Dock( RIGHT )
+	cancel:DockMargin( 0, 0, 8, 0 )
+	cancel:SetWide( 90 )
+	cancel:SetText( "Cancel" )
+	cancel.DoClick = function()frame:Close()end
+	local selection = vgui.Create( "DLabel", footer )
+	selection:Dock( FILL )
+	selection:SetTextColor( color_white )
+	selection:SetText( "Selected: " .. ( frame.PendingMap ~= "" and frame.PendingMap or "empty block" ) )
+	local sheet = vgui.Create( "DPropertySheet", frame )
+	sheet:Dock( FILL )
+	sheet:SetFadeTime( 0 )
+	frame.PropertySheet = sheet
+	local maps = vgui.Create( "DPanel", sheet )
+	maps.Paint = nil
+	maps:DockPadding( 8, 8, 8, 8 )
+	local setSelected
 
 	local function pick( name )
-		sendSelection( ent, name )
-		frame:Close()
+		frame.PendingMap = name
+		selection:SetText( "Selected: " .. ( name ~= "" and name or "empty block" ) )
+		if setSelected then setSelected( name ) end
 	end
 
-	local top = createTopBar( frame )
+	local top = createTopBar( maps )
 	addEmptyButton( top, function() pick( "" ) end )
-	for _, setting in ipairs( SETTINGS ) do addSettingBox( top, setting, ent ) end
 	local filter = addFilterEntry( top, countListedMaps( order, byName ) )
 
-	local setFilter = createMapList( frame, order, byName, findIcons(), ent:GetMapName(), pick )
+	local setFilter
+	setFilter, setSelected = createMapList( maps, order, byName, findIcons(), ent:GetMapName(), pick,
+		frame:GetWide() - SCROLL_AND_BORDER_W - 32 )
 	filter.OnChange = function( self ) setFilter( self:GetValue() ) end
+	sheet:AddSheet( "Maps", maps, "icon16/map.png" )
+	local settingsPage = performancePage( frame, sheet, frame.SettingsDraft )
+	frame.PerformanceTab = sheet:AddSheet( "Performance", settingsPage, "icon16/cog.png" ).Tab
+	apply.DoClick = function()
+		if not PocketMap.Settings.Apply( ent, frame.SettingsDraft ) then frame:Close() return end
+		local name = frame.PendingMap
+		if name ~= "" and name == ent:GetMapName() then ent:AcceptMap()
+		else sendSelection( ent, name ) end
+		frame:Close()
+	end
 end
 
 net.Receive( "PocketMap_Open", function()
 	local ent = net.ReadEntity()
 	if not IsValid( ent ) or ent:GetClass() ~= "ent_pocketmap" then return end
 
-	if ent:IsMapPending() then
-		ent:AcceptMap()
-	else
-		PocketMap.OpenMenu( ent )
-	end
+	PocketMap.OpenMenu( ent )
 end )

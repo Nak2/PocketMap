@@ -163,10 +163,44 @@ end
 
 local QUADS = buildQuads()
 local WINDINGS = { { "tl", "tr", "br", "bl" }, { "bl", "br", "tr", "tl" } }
+local TRIANGLES = { "tl", "tr", "br", "tl", "br", "bl", "bl", "br", "tr", "bl", "tr", "tl" }
+
+-- The cube geometry never changes. Keep one GPU mesh per side of each map,
+-- while continuing to update the sky material for animated painted skies.
+function Sky.Free( mini )
+	for _, entry in pairs( mini.skyCubeMeshes or {} ) do entry.mesh:Destroy() end
+	mini.skyCubeMeshes = nil
+end
+
+local function sideMesh( mini, side, material )
+	local meshes = mini.skyCubeMeshes
+	if not meshes then meshes = {} mini.skyCubeMeshes = meshes end
+	local entry = meshes[side]
+	if entry and entry.material == material then return entry.mesh end
+	if entry then entry.mesh:Destroy() end
+
+	local quad = QUADS[side]
+	local result = Mesh( material )
+	mesh.Begin( result, MATERIAL_TRIANGLES, 4 )
+	for i = 1, #TRIANGLES do
+		local corner = TRIANGLES[i]
+		mesh.Position( quad.position[corner] )
+		mesh.TexCoord( 0, quad.uv[corner][1], quad.uv[corner][2] )
+		mesh.Color( 255, 255, 255, 255 )
+		mesh.AdvanceVertex()
+	end
+	mesh.End()
+	meshes[side] = { material = material, mesh = result }
+	return result
+end
 
 ---Both windings, so it shows whichever way the material culls.
-local function drawSide( side, material )
+local function drawSide( mini, side, material )
 	render.SetMaterial( material )
+	if Sky.cachedCube ~= false then
+		sideMesh( mini, side, material ):Draw()
+		return
+	end
 	local quad = QUADS[side]
 
 	for _, winding in ipairs( WINDINGS ) do
@@ -222,7 +256,7 @@ function Sky.DrawCube( mini, eye, override )
 
 	for _, side in ipairs( SIDES ) do
 		if paint then applyPaint( backdrop[side], paint ) end
-		drawSide( side, backdrop[side] )
+		drawSide( mini, side, backdrop[side] )
 	end
 
 	if paint then g_SkyPaint = hostSkyPaint end
@@ -299,21 +333,27 @@ end
 ---The 3D skybox, for an eye inside the block. A point S of the sky room is at skyScale * ( S - sky origin ) from the origin of the map,
 ---as the engine draws it for someone standing in the map. It is drawn after the 2D sky and before the map, which is always in front of it.
 ---@param options table # the draw options of the world meshes
-function Sky.Draw3D( mini, options )
+function Sky.Draw3D( mini, options, wholeView )
+	local world = not PocketMap.Settings or PocketMap.Settings.Enabled( mini, "sky_world" )
+	local props = not PocketMap.Settings or PocketMap.Settings.Enabled( mini, "sky_props" )
+	local decals = not PocketMap.Settings or PocketMap.Settings.Enabled( mini, "sky_decals" )
+	if not world and not props and not decals then return end
 	local objects = mini.skyObjects
 	if #objects == 0 or not mini.skyOrigin then return end
 
 	local matrix = updateSkyMatrix( mini )
+	options = PocketMap.Materials.DrawOptions( options, matrix:GetScale().x )
 
-	maskBlock( mini )
+	if not wholeView then maskBlock( mini ) end
 	render.OverrideDepthEnable( true, true )
-	for i = 1, #objects do objects[i]:DrawOpaque( matrix, options ) end
-	PocketMap.Props.DrawSky( mini, matrix, "opaque" )
-	for i = 1, #objects do objects[i]:DrawTranslucent( matrix, options ) end
+	if world then for i = 1, #objects do objects[i]:DrawOpaque( matrix, options ) end end
+	if props then PocketMap.Props.DrawSky( mini, matrix, "opaque" ) end
+	if decals and PocketMap.Decals then PocketMap.Decals.Draw( mini, matrix ) end
+	if world then for i = 1, #objects do objects[i]:DrawTranslucent( matrix, options ) end end
 	render.OverrideDepthEnable( true, true )
-	PocketMap.Props.DrawSky( mini, matrix, "translucent" )
+	if props then PocketMap.Props.DrawSky( mini, matrix, "translucent" ) end
 
-	clearDepthInMask()
+	if wholeView then render.ClearDepth() else clearDepthInMask() end
 	render.OverrideDepthEnable( false )
-	stencilForTheMap()
+	if not wholeView then stencilForTheMap() end
 end

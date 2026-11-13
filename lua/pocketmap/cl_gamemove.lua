@@ -24,7 +24,7 @@ end
 local VIRTUAL_NAMES = {
 	"OnGround", "IsOnGround", "Crouching", "GetFlags", "IsFlagSet", "GetPos",
 	"GetNetworkOrigin", "GetVelocity", "GetMoveType", "GetGroundEntity",
-	"WaterLevel", "WaterType", "EyeAngles", "GetAimVector", "EyePos",
+	"WaterLevel", "WaterType", "EyeAngles", "GetAimVector", "EyePos", "GetCurrentViewOffset",
 	"KeyDown", "KeyPressed", "KeyReleased",
 }
 
@@ -42,13 +42,13 @@ function Bridge.Step(ply, mv, cmd, session)
 	local function flags()
 		local value = bit.band(realFlags, bit.bnot(flagsMask))
 		if session.onground then value = bit.bor(value, FL_ONGROUND) end
-		if session.ducking then value = bit.bor(value, FL_DUCKING) end
+		if session.crouchFlag then value = bit.bor( value, FL_DUCKING ) end
 		return value
 	end
 	local virtual = {
 		OnGround = function() return session.onground == true end,
 		IsOnGround = function() return session.onground == true end,
-		Crouching = function() return session.ducking == true end,
+		Crouching = function() return session.crouchFlag == true end,
 		GetFlags = flags,
 		IsFlagSet = function(_, flag) return bit.band(flags(), flag) ~= 0 end,
 		GetPos = function() return mv:GetOrigin() end,
@@ -60,7 +60,8 @@ function Bridge.Step(ply, mv, cmd, session)
 		WaterType = function() return session.waterType or 0 end,
 		EyeAngles = function() return mv:GetAngles() end,
 		GetAimVector = function() return mv:GetAngles():Forward() end,
-		EyePos = function() return mv:GetOrigin() + Vector(0, 0, session.ducking and 28 or 64) end,
+		EyePos = function() return mv:GetOrigin() + PocketMap.Walk.EyeOffset( session ) end,
+		GetCurrentViewOffset = function() return PocketMap.Walk.EyeOffset( session ) end,
 		KeyDown = function(_, key) return mv:KeyDown(key) end,
 		KeyPressed = function(_, key) return mv:KeyPressed(key) end,
 		KeyReleased = function(_, key) return mv:KeyReleased(key) end,

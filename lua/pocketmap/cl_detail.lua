@@ -115,13 +115,17 @@ local function buildMesh( material, buffer )
 	return meshObject
 end
 
-local function flushMesh( mini, material, buffer )
+local function flushMesh( mini, material, buffer, clusters )
 	mini.detailMeshes[#mini.detailMeshes + 1] = buildMesh( material, buffer )
+	mini.detailClusters = mini.detailClusters or {}
+	mini.detailClusters[#mini.detailMeshes] = clusters or false
 	mini.detailMaterial = material
 end
 
 ---@param job table # the loader's job: bsp, addProp
 function Detail.Build( mini, job )
+	if PocketMap.Settings and not PocketMap.Settings.Enabled( mini, "detail_sprites" )
+		and not PocketMap.Settings.Enabled( mini, "detail_models" ) then return end
 	local bsp = job.bsp
 	local info = bsp:GetDetailPropInfo()
 	if not info or info.count == 0 then return end
@@ -130,17 +134,31 @@ function Detail.Build( mini, job )
 	local material = sheet and cutoutCopy( sheet )
 	local step = math.max( 1, math.ceil( info.count / MAX_DETAIL_PROPS ) )
 	local buffer, inBuffer = newSpriteBuffer(), 0
+	local previous, clusters
 
 	for index = 0, info.count - 1, step do
 		local object = bsp:GetDetailProp( index )
 
 		if object.Type == DETAIL.MODEL then
 			local path = info.models[object.Index]
-			if path then
+			if path and ( not PocketMap.Settings or PocketMap.Settings.Enabled( mini, "detail_models" ) ) then
 				job.addProp( path, object.Origin, object.Angles, 0, nil )
 				mini.detailModels = mini.detailModels + 1
 			end
-		elseif material and info.sprites[object.Index] then
+		elseif material and info.sprites[object.Index] and ( not PocketMap.Settings or PocketMap.Settings.Enabled( mini, "detail_sprites" ) ) then
+			local leaf = bsp:GetLeafs()[object.Leaf]
+			local cluster = leaf and leaf.cluster
+			-- Detail props are assigned a leaf by the BSP compiler, just as in
+			-- native rendering. Unknown leaves retain the old draw behavior.
+			local key = cluster and cluster >= 0 and cluster or -1
+			if previous ~= key then
+				if inBuffer > 0 then
+					flushMesh( mini, material, buffer, clusters )
+					coroutine.yield()
+				end
+				buffer, inBuffer, previous = newSpriteBuffer(), 0, key
+				clusters = key >= 0 and { key } or nil
+			end
 			appendSprite( buffer, object, info.sprites[object.Index] )
 			inBuffer = inBuffer + 1
 			mini.detailSprites = mini.detailSprites + 1
@@ -148,13 +166,13 @@ function Detail.Build( mini, job )
 
 		if inBuffer >= SPRITES_PER_MESH then
 			mini:SetStatus( "Detail props", STATUS_BASE + STATUS_RANGE * index / info.count )
-			flushMesh( mini, material, buffer )
+			flushMesh( mini, material, buffer, clusters )
 			buffer, inBuffer = newSpriteBuffer(), 0
 			coroutine.yield()
 		end
 	end
 
-	if inBuffer > 0 then flushMesh( mini, material, buffer ) end
+	if inBuffer > 0 then flushMesh( mini, material, buffer, clusters ) end
 	coroutine.yield()
 end
 
@@ -169,9 +187,19 @@ function Detail.Blends( mini )
 	return mini.detailBlends
 end
 
-function Detail.Draw( mini )
+function Detail.Draw( mini, pvs )
 	local meshes = mini.detailMeshes
 	if #meshes == 0 then return end
+	if pvs and mini.detailClusters then
+		if mini.detailCheckedPVS ~= pvs then
+			local visible = {}
+			for i = 1, #meshes do
+				if PocketMap.Visibility.Visible( mini.detailClusters[i], pvs ) then visible[#visible + 1] = meshes[i] end
+			end
+			mini.detailCheckedPVS, mini.detailVisibleMeshes = pvs, visible
+		end
+		meshes = mini.detailVisibleMeshes
+	end
 
 	cam.PushModelMatrix( mini.matrix )
 	render.SetMaterial( mini.detailMaterial )
